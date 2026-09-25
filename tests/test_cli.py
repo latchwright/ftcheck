@@ -5,7 +5,6 @@ import pathlib
 import tomllib
 
 import ftcheck
-
 from ftcheck.cli import main
 from ftcheck.exit_codes import CLEAN, FINDINGS, UNAVAILABLE, USAGE
 
