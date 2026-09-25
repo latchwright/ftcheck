@@ -10,14 +10,34 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT OR Apache-2.0"
 license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
+authors = [{ name = "Latchwright" }]
+keywords = ["free-threading", "pyo3", "threadsanitizer", "rust", "data-race"]
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
     "Programming Language :: Rust",
-    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Free Threading :: 2 - Beta",
+    "Topic :: Software Development :: Testing",
+    "Topic :: Software Development :: Quality Assurance",
 ]
 
 [project.urls]
+Homepage = "https://github.com/latchwright/ftcheck"
 Repository = "https://github.com/latchwright/ftcheck"
 Issues = "https://github.com/latchwright/ftcheck/issues"
+Changelog = "https://github.com/latchwright/ftcheck/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/latchwright/ftcheck/tree/main/docs"
 
 [project.scripts]
 ftcheck = "ftcheck.cli:main"
