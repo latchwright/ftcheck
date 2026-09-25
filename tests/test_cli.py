@@ -2,6 +2,9 @@
 """The exit-code contract, and the language the tool is allowed to use."""
 import json
 import pathlib
+import tomllib
+
+import ftcheck
 
 from ftcheck.cli import main
 from ftcheck.exit_codes import CLEAN, FINDINGS, UNAVAILABLE, USAGE
@@ -10,6 +13,14 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 CLEAN_CRATE = str(ROOT / "fixtures/clean/clean-mutex")
 RACY_CRATE = str(ROOT / "fixtures/racy/ft001-static-mut")
 LOCK_PAIR = str(ROOT / "fixtures/racy/ft003-lock-pair")
+
+
+def test_version_agrees_everywhere():
+    """The wheel, the crates and `ftcheck --version` all carry one version."""
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    cargo = tomllib.loads((ROOT / "Cargo.toml").read_text())
+    assert ftcheck.__version__ == pyproject["project"]["version"]
+    assert ftcheck.__version__ == cargo["workspace"]["package"]["version"]
 
 
 def test_clean_fixture_exits_zero():

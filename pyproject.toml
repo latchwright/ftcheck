@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "ftcheck"
-version = "0.0.0"
+version = "0.1.0"
 description = "Free-threaded correctness harness for Rust/PyO3 extensions"
 readme = "README.md"
 requires-python = ">=3.11"
