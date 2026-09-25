@@ -75,7 +75,9 @@ jobs:
           python-version: '3.14t'
       - uses: dtolnay/rust-toolchain@stable
       - run: pip install maturin pytest pyyaml
-      - run: maturin build --out dist
+      # Name the interpreter: without -i, the abi3 build yields a cp311-abi3
+      # wheel, which pip refuses on free-threaded CPython.
+      - run: maturin build --out dist -i python
       - run: pip install --no-index --find-links dist ftcheck
       # ftcheck is itself a PyO3 extension declaring gil_used = false, so this
       # job is the tool's own dogfood: if importing it re-enabled the GIL, the
