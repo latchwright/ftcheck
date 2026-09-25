@@ -1,0 +1,6 @@
+race = true
+rules = ["FT002"]
+symbols = ["Token"]
+pyo3_version = "0.23.4"
+justification = "PyO3 #4894: freelist pyclasses were thread-unsafe on free-threaded builds until PR #4902, first released in 0.23.5 (2025-02-22). 0.23.4 is the last release that carries the bug."
+tsan_pending = "The upstream 3.13t sanitizer image cannot be pulled: on 2026-09-24 the manifest index for ghcr.io/nascheme/cpython-tsan:3.13t and :3.13.12t names an amd64 manifest (sha256:9e66e993...) that the registry no longer serves. PyO3 0.23 cannot target 3.14 (its maximum is 3.13, and free-threaded builds cannot bypass the check), so this fixture has no interpreter to run on until that image is restored."

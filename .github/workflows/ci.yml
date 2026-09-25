@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guards:
+    name: publish guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/check-private.sh
+      - run: ./scripts/check-headers.sh
+
+  rust:
+    name: rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  fixtures-compile:
+    name: fixtures compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: every fixture must build
+        run: |
+          set -euo pipefail
+          for d in fixtures/*/*/; do
+            [ -f "$d/Cargo.toml" ] || continue
+            echo "::group::$d"
+            (cd "$d" && cargo check --quiet)
+            echo "::endgroup::"
+          done
+
+  python:
+    name: python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pip install maturin ruff pytest pyyaml
+      - run: ruff check python/ tests/
+      - run: maturin build --out dist
+      - run: pip install --no-index --find-links dist ftcheck
+      - run: pytest tests/ -v
+
+  free-threaded:
+    name: free-threaded python
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14t'
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pip install maturin pytest pyyaml
+      - run: maturin build --out dist
+      - run: pip install --no-index --find-links dist ftcheck
+      # ftcheck is itself a PyO3 extension declaring gil_used = false, so this
+      # job is the tool's own dogfood: if importing it re-enabled the GIL, the
+      # assertion below would fail.
+      - run: python -c "import sys, ftcheck; assert not sys._is_gil_enabled()"
+      - run: pytest tests/ -v
+
+  # ThreadSanitizer ground truth: every fixture built with -Zsanitizer=thread
+  # and run concurrently under the upstream TSan CPython. The image is
+  # ghcr.io/nascheme/cpython-tsan:3.14t plus the Rust layer in docker/, whose
+  # build refuses to finish if nightly Rust's LLVM differs from CPython's.
+  #
+  # GitHub's runners ship vm.mmap_rnd_bits=32, which TSan cannot start under.
+  # The suite runs its container with --security-opt seccomp=unconfined so TSan
+  # can disable ASLR for itself; see docs/ci.md.
+  tsan:
+    name: threadsanitizer
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pip install maturin pytest pyyaml
+      - run: maturin build --out dist
+      - run: pip install --no-index --find-links dist ftcheck
+      - run: docker build -f docker/Dockerfile -t ftcheck-tsan .
+      # FTCHECK_TSAN=1 turns a missing image or Docker into a failure rather
+      # than a skip, so this job cannot pass by running nothing.
+      - run: pytest tests/test_tsan_ground_truth.py -v
+        env:
+          FTCHECK_TSAN: '1'
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: tsan-ground-truth
+          path: |
+            target/tsan-ground-truth/*.json
+            target/tsan-ground-truth/*.stderr
+            target/tsan-ground-truth/run.log
+            target/tsan-ground-truth/work/*/*.log

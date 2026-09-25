@@ -1,0 +1,4 @@
+race = true
+rules = ["FT001"]
+symbols = ["bump", "COUNTER"]
+justification = "Unsynchronised read-modify-write of a `static mut` reachable directly from a #[pyfunction]. The GIL previously provided the mutual exclusion the author never wrote."

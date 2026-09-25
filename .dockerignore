@@ -1,0 +1,13 @@
+# The image needs only ftcheck's own sources. Everything else is large, local,
+# or both — target/ alone is gigabytes.
+*
+!Cargo.toml
+!Cargo.lock
+!pyproject.toml
+!README.md
+!LICENSE-MIT
+!LICENSE-APACHE
+!crates/
+!python/ftcheck/
+python/ftcheck/**/*.so
+python/ftcheck/**/__pycache__

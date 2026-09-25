@@ -1,0 +1,6 @@
+race = true
+rules = []
+symbols = ["BorrowFlag", "bump"]
+pyo3_version = "0.23.5"
+justification = "PyO3 #4904 was a bundle of TSan reports, not one race. The race PyO3 fixed from it was a Relaxed compare-exchange in BorrowFlag (src/pycell/impl_.rs), patched by PR #4948 and first released in 0.24.0. `rules = []` is deliberate: the bug was inside PyO3, so no lint rule can see it and only the sanitizer pipeline can confirm it. The lint half is live: it must report nothing."
+tsan_pending = "The upstream 3.13t sanitizer image cannot be pulled: on 2026-09-24 the manifest index for ghcr.io/nascheme/cpython-tsan:3.13t and :3.13.12t names an amd64 manifest (sha256:9e66e993...) that the registry no longer serves. PyO3 0.23 cannot target 3.14 (its maximum is 3.13, and free-threaded builds cannot bypass the check), so this fixture has no interpreter to run on until that image is restored."

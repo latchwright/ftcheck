@@ -1,0 +1,4 @@
+race = true
+rules = ["FT001"]
+symbols = ["bump", "Buffer"]
+justification = "Raw-pointer read-modify-write inside an `unsafe` block reachable from #[pymethods], on a type made `Sync` by `unsafe impl` rather than by construction."

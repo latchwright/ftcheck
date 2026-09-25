@@ -1,0 +1,5 @@
+# The constructor needs a Settings, which no primitive satisfies. One line
+# tells `ftcheck stress` how to build a valid instance; everything else
+# (Settings itself, the methods' arguments) is derived.
+[stress.factories]
+"stress_unshared_state.Tally" = "stress_unshared_state.Tally(stress_unshared_state.Settings(4))"

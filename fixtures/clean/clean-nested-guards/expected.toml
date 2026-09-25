@@ -1,0 +1,3 @@
+race = false
+rules = []
+justification = "Two mutexes held at once — the first guard is still alive when the second is taken — and always in the same order. Nested, not sequential, so FT003 must not fire, and no lock-order inversion exists. Reconstructed from the most common false positive in the public-project triage (23 of 31 wrong calls held the first guard)."

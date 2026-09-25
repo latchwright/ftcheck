@@ -1,0 +1,5 @@
+race = false
+rules = []
+symbols = []
+pyo3_version = "0.29.2"
+justification = "Source-identical to racy/ft002-freelist-old-pyo3, differing only in the PyO3 version. On >= 0.23.5 the freelist is held in a PyOnceLock<Mutex<PyObjectFreeList>> and locked on every alloc and free, so flagging this is a FALSE POSITIVE. This fixture exists to make that regression impossible to miss."

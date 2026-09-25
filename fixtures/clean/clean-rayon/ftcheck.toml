@@ -1,0 +1,5 @@
+# Inputs large enough for rayon to split work across its pool, so the
+# crossbeam-deque buffer is exercised.
+[stress.args]
+"clean_rayon.parallel_sum" = ["10000", "100000"]
+"clean_rayon.parallel_sort" = ["2000", "50000"]

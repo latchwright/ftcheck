@@ -1,0 +1,5 @@
+# ftcheck's own crates build on stable. Nightly is required only to build a
+# *target* extension with -Zsanitizer=thread, and is invoked explicitly there.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

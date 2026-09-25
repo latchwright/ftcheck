@@ -1,0 +1,5 @@
+race = false
+rules = ["FT004"]
+symbols = ["config"]
+pending = true
+justification = "`OnceLock::get_or_init` guarantees one stored value, not one closure execution. The counter increment is an observable side effect that can occur more than once. Not a data race — every access is atomic — so TSan reports nothing and only a lint can see it. FT004 is unimplemented; deciding what counts as an observable side effect needs judgement the AST does not carry."

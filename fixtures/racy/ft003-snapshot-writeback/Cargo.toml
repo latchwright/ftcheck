@@ -1,0 +1,12 @@
+[package]
+name = "ft003-snapshot-writeback"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "ft003_snapshot_writeback"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.29", features = ["extension-module"] }

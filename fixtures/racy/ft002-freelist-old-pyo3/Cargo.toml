@@ -1,0 +1,12 @@
+[package]
+name = "ft002-freelist-old-pyo3"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "ft002_freelist_old_pyo3"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "=0.23.4", features = ["extension-module"] }

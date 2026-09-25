@@ -1,0 +1,70 @@
+# ftcheck as a GitHub Action.
+#
+# Builds the ftcheck-tsan image (the upstream TSan free-threaded CPython plus the
+# Rust layer — see docker/Dockerfile) from this action's own checkout, then runs
+# `ftcheck ci` or `ftcheck stress` against the calling repository inside it.
+#
+# It does not use actions/setup-python: a ThreadSanitizer-instrumented
+# interpreter is not something setup-python provides, and the image is where
+# ftcheck's LLVM-matching guarantee lives.
+name: ftcheck
+description: Find free-threading races in a Rust/PyO3 extension with ThreadSanitizer
+branding:
+  icon: shield
+  color: gray-dark
+
+inputs:
+  command:
+    description: "`ci` (your tests, every test body in N threads) or `stress` (one shared instance per type)"
+    default: ci
+  path:
+    description: Project directory, relative to the workspace
+    default: .
+  args:
+    description: Extra arguments, e.g. `--threads 16` or `--seed 1234 --budget 300`
+    default: ""
+  sarif:
+    description: Where to write SARIF, relative to the workspace (empty to skip)
+    default: ftcheck.sarif
+
+outputs:
+  exit-code:
+    description: "0 no race on the exercised surface, 1 findings, 2 usage, 3 could not run, 4 ci only: tests failed under threads with no race"
+    value: ${{ steps.run.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - name: Build the ftcheck-tsan image
+      shell: bash
+      run: docker build -f "$GITHUB_ACTION_PATH/docker/Dockerfile" -t ftcheck-tsan "$GITHUB_ACTION_PATH"
+
+    - name: Run ftcheck ${{ inputs.command }}
+      id: run
+      shell: bash
+      env:
+        FTCHECK_COMMAND: ${{ inputs.command }}
+        FTCHECK_PATH: ${{ inputs.path }}
+        FTCHECK_ARGS: ${{ inputs.args }}
+        FTCHECK_SARIF: ${{ inputs.sarif }}
+      run: |
+        set -uo pipefail
+        case "$FTCHECK_COMMAND" in
+          ci|stress) ;;
+          *) echo "::error::command must be ci or stress, got '$FTCHECK_COMMAND'"; exit 2 ;;
+        esac
+        sarif_args=()
+        if [ -n "$FTCHECK_SARIF" ]; then
+          sarif_args=(--sarif "/workspace/$FTCHECK_SARIF")
+        fi
+        # seccomp=unconfined lets TSan disable ASLR for its own process: GitHub's
+        # runners ship vm.mmap_rnd_bits=32, which TSan cannot start under.
+        # shellcheck disable=SC2086
+        docker run --rm --security-opt seccomp=unconfined \
+          --user "$(id -u):$(id -g)" -e HOME=/tmp \
+          -v "$GITHUB_WORKSPACE":/workspace \
+          ftcheck-tsan ftcheck "$FTCHECK_COMMAND" "/workspace/$FTCHECK_PATH" \
+          "${sarif_args[@]}" $FTCHECK_ARGS
+        code=$?
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        exit $code

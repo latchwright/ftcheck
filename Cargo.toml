@@ -1,0 +1,25 @@
+[workspace]
+members = ["crates/*"]
+exclude = ["fixtures"]
+resolver = "2"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/latchwright/ftcheck"
+publish = false
+
+[workspace.dependencies]
+# `span-locations` is load-bearing: without it every syn span reports line 0
+# and findings cannot be mapped back to source.
+proc-macro2 = { version = "1.0", features = ["span-locations"] }
+quote = "1.0"
+syn = { version = "3.0", features = ["full", "extra-traits", "visit", "parsing", "printing"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+semver = "1.0"
+toml = "1.1"
+anyhow = "1.0"
+walkdir = "2"

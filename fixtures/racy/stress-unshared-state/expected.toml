@@ -1,0 +1,5 @@
+race = true
+ci_race = false
+rules = ["FT001"]
+symbols = ["record", "Tally"]
+justification = "A frozen #[pyclass] mutating through UnsafeCell, made Sync by `unsafe impl` on the belief that the GIL serialised calls. Concurrent `record` calls on one instance race. `ci_race = false` is the point of this fixture: its tests build a fresh Tally per test body, so under `ftcheck ci` no instance is shared and TSan sees nothing, while `ftcheck stress` shares one instance deliberately and must report the race."

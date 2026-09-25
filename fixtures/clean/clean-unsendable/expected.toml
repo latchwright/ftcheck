@@ -1,0 +1,3 @@
+race = false
+rules = []
+justification = "A raw-pointer deref inside a #[pyclass(unsendable)] type. PyO3 confines unsendable objects to their creating thread and raises on access from any other, so the pointer cannot be shared and FT001 must not fire. Reconstructed from a lint false positive on a public project. Under `stress`, cross-thread calls on the shared instance raise and are counted; TSan must report nothing."

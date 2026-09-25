@@ -1,0 +1,5 @@
+race = true
+rules = ["FT005"]
+symbols = ["legacy_format", "format_value"]
+pending = true
+justification = "The C function returns a pointer into a `static char buf[64]` shared by all callers. Concurrent calls race on that buffer and on the returned pointer's contents. FT005 is unimplemented: recognising this requires a maintained list of C entry points documented as not thread-safe, which the AST cannot supply. Note that FT001 must NOT fire here — the deref is of a `*const c_char` from FFI, and flagging every FFI string read would drown the rule."

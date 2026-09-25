@@ -1,0 +1,13 @@
+[package]
+name = "ftcheck-core"
+description = "Finding model and report emitters for ftcheck"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

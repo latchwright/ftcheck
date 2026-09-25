@@ -1,0 +1,5 @@
+race = false
+rules = []
+stress_rules = ["stress/panic"]
+symbols = ["snapshot"]
+justification = "`try_lock().expect()` on a shared instance: never panics on one thread, panics as soon as two overlap. Not a data race (a real mutex guards the data), so `race = false` and TSan must stay silent; `stress` must report it as stress/panic because the single-threaded baseline never panicked. Before `stress/panic` existed, ftcheck reported this shape as clean."

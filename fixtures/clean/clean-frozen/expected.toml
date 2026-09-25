@@ -1,0 +1,3 @@
+race = false
+rules = []
+justification = "`#[pyclass(frozen)]` with no interior mutability. Nothing observable changes after construction, so concurrent access shares only immutable data."

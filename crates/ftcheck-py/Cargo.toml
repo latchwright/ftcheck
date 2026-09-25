@@ -1,0 +1,20 @@
+[package]
+name = "ftcheck-py"
+description = "Python bindings for ftcheck"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "_ftcheck"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+ftcheck-core = { path = "../ftcheck-core" }
+ftcheck-lint = { path = "../ftcheck-lint" }
+pyo3 = "0.29"
+semver = { workspace = true }
+serde_json = { workspace = true }

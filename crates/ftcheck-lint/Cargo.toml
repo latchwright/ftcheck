@@ -1,0 +1,20 @@
+[package]
+name = "ftcheck-lint"
+description = "Static free-threading hazard rules for Rust/PyO3 extensions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+ftcheck-core = { path = "../ftcheck-core" }
+# `span-locations` is load-bearing — without it every span reports line 0.
+proc-macro2 = { workspace = true }
+syn = { workspace = true }
+quote = { workspace = true }
+semver = { workspace = true }
+toml = { workspace = true }
+anyhow = { workspace = true }
+walkdir = { workspace = true }

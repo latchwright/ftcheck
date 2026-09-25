@@ -1,0 +1,4 @@
+race = false
+rules = ["FT003"]
+symbols = ["push", "consistent"]
+justification = "Two mutexes acquired in separate statements with an invariant assumed to hold across both. `race = false` is deliberate: every memory access is synchronised, so ThreadSanitizer reports nothing. This is a logic race, visible only to the lint, at `likely` confidence."

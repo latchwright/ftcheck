@@ -1,0 +1,16 @@
+# ftcheck's default ThreadSanitizer suppressions for Rust dependencies.
+#
+# Every entry is justified by the dependency's own documentation, and is as
+# narrow as TSan allows: `race_top:` matches only the frame where the access
+# happened, so a real race in your code that merely runs inside the
+# dependency (a closure executed by a rayon job, say) is still reported.
+
+# crossbeam-deque's Chase-Lev buffer, as used by rayon's job queue.
+# crossbeam-deque 0.8 src/deque.rs, Buffer::write / Buffer::read:
+#   "This method might be concurrently called with another `read` at the same
+#    index, which is technically speaking a data race and therefore UB. [...]
+#    Hence, as a hack, we use a volatile write instead."
+# The racing access is the volatile write/read of a rayon JobRef slot: the
+# dependency's own documented race, not the calling project's code.
+race_top:write_volatile<core::mem::maybe_uninit::MaybeUninit<rayon_core::job::JobRef>>
+race_top:read_volatile<core::mem::maybe_uninit::MaybeUninit<rayon_core::job::JobRef>>

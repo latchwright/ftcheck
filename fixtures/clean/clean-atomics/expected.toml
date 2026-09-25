@@ -1,0 +1,3 @@
+race = false
+rules = []
+justification = "An `AtomicU64` static and a `OnceLock` with a side-effect-free initialiser. Both are `Sync` by construction; FT001 must not fire on a static that is not `mut`, and FT004 must not fire on a pure initialiser."

@@ -1,0 +1,16 @@
+name: Feature request
+description: A check, command or output format you would like ftcheck to have.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to catch or do, and why current behaviour does not cover it.
+    validations:
+      required: true
+  - type: textarea
+    id: example
+    attributes:
+      label: An example
+      description: Code that shows the hazard, or the output you would want.

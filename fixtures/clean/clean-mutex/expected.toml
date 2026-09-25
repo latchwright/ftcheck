@@ -1,0 +1,3 @@
+race = false
+rules = []
+justification = "All mutable state behind one `Mutex`. Each method takes exactly one lock, so no invariant spans two acquisitions and FT003 must not fire."

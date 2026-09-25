@@ -1,0 +1,4 @@
+race = false
+rules = ["FT003"]
+symbols = ["normalize"]
+justification = "The same RwLock acquired twice: a copy taken under the read lock is written back under a later write lock, overwriting any push that landed in between (a lost update). Every access is synchronised, so TSan reports nothing (`race = false`). This is the shape of every true FT003 positive found on public code so far: one lock re-acquired around work done with it released."

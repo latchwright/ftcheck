@@ -1,0 +1,3 @@
+race = false
+rules = []
+justification = "Parallel work on rayon's global pool from many Python threads, each call on its own data. The only TSan report possible here is crossbeam-deque's documented deliberate buffer race inside rayon's job queue, covered by ftcheck's default race_top suppression; this fixture pins that the suppression holds (it reported on two public projects before it existed)."

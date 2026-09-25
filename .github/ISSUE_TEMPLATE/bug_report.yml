@@ -1,0 +1,41 @@
+name: Bug report
+description: ftcheck crashed, refused to run, or reported something wrong.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command and output
+      description: The exact command, and its full output (the exit code matters).
+      render: console
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - False positive (reported a problem that is not there)
+        - False negative (missed a real problem)
+        - Crash or refusal to run
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: ftcheck version or commit
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS, Python version (and whether it is free-threaded), Rust toolchain, PyO3 version.

@@ -1,0 +1,12 @@
+[package]
+name = "pyo3-4948-borrowflag"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "pyo3_4948_borrowflag"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "=0.23.5", features = ["extension-module"] }
