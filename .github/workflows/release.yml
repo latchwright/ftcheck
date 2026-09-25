@@ -163,7 +163,7 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then bin="$RUNNER_TEMP/venv/Scripts"; else bin="$RUNNER_TEMP/venv/bin"; fi
           "$bin/python" -m pip install --no-index --only-binary :all: --find-links dist ftcheck
           "$bin/python" -m pip list
-          test "$("$bin/ftcheck" --version)" = "ftcheck ${TAG#v}"
+          test "$("$bin/ftcheck" --version | tr -d '\r')" = "ftcheck ${TAG#v}"
           "$bin/ftcheck" lint fixtures/clean/clean-mutex
           "$bin/ftcheck" matrix fixtures/clean/clean-mutex > "$RUNNER_TEMP/matrix.yml"
           test -s "$RUNNER_TEMP/matrix.yml"
@@ -204,9 +204,9 @@ jobs:
     permissions:
       id-token: write
     steps:
+      # Every artifact this run uploaded is a wheel set or the sdist.
       - uses: actions/download-artifact@v5
         with:
-          pattern: '{wheels-*,sdist}'
           path: dist
           merge-multiple: true
       - run: ls -l dist
@@ -224,9 +224,9 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+      # Every artifact this run uploaded is a wheel set or the sdist.
       - uses: actions/download-artifact@v5
         with:
-          pattern: '{wheels-*,sdist}'
           path: dist
           merge-multiple: true
       - name: notes from the CHANGELOG section for this version
