@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-ftcheck is pre-release. Only the latest commit on `main` and the most recent tagged release
+ftcheck is alpha software. Only the latest commit on `main` and the most recent tagged release
 receive fixes.
 
 ## Reporting a vulnerability
