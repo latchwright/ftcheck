@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: ./scripts/check-private.sh
+      - run: ./scripts/check-publish-guards.sh
       - run: ./scripts/check-headers.sh
 
   rust:

@@ -1,0 +1,251 @@
+# Builds, tests and publishes ftcheck when a version tag is pushed.
+#
+# This is the only workflow that publishes anything; scripts/check-publish-guards.sh
+# asserts that, and that publishing uses PyPI Trusted Publishing (OIDC) with no
+# stored token. The crates are internal and never go to crates.io.
+#
+# Wheels: one abi3 wheel per platform (CPython 3.11 and later, GIL builds) plus a
+# cp314t wheel per platform, because abi3 wheels do not install on free-threaded
+# CPython 3.14.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: tag matches version
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: tag, pyproject, Cargo and CHANGELOG agree
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          grep -qx "version = \"$version\"" pyproject.toml \
+            || { echo "::error::pyproject.toml is not at $version"; exit 1; }
+          grep -qx "version = \"$version\"" Cargo.toml \
+            || { echo "::error::Cargo.toml is not at $version"; exit 1; }
+          grep -qx "__version__ = \"$version\"" python/ftcheck/__init__.py \
+            || { echo "::error::python/ftcheck/__init__.py is not at $version"; exit 1; }
+          grep -q "^## $version " CHANGELOG.md \
+            || { echo "::error::CHANGELOG.md has no '## $version' section"; exit 1; }
+      - run: ./scripts/check-publish-guards.sh
+
+  wheels:
+    name: wheels ${{ matrix.name }}
+    needs: check
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-x86_64, os: ubuntu-latest, target: x86_64 }
+          - { name: linux-aarch64, os: ubuntu-24.04-arm, target: aarch64 }
+          - { name: macos-x86_64, os: macos-15-intel, target: x86_64 }
+          - { name: macos-arm64, os: macos-14, target: aarch64 }
+          - { name: windows-x64, os: windows-latest, target: x64 }
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      # Outside Linux, maturin builds against the runner's interpreters. On Linux
+      # it builds inside a manylinux container, which carries its own.
+      - uses: actions/setup-python@v6
+        id: py311
+        if: runner.os != 'Linux'
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-python@v6
+        id: py314t
+        if: runner.os != 'Linux'
+        with:
+          python-version: '3.14t'
+      - name: choose interpreters
+        id: interp
+        shell: bash
+        env:
+          PY311: ${{ steps.py311.outputs.python-path }}
+          PY314T: ${{ steps.py314t.outputs.python-path }}
+        run: |
+          if [ "$RUNNER_OS" = Linux ]; then
+            echo "args=-i python3.11 -i python3.14t" >> "$GITHUB_OUTPUT"
+          else
+            echo "args=-i $PY311 -i $PY314T" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: '2_28'
+          args: --release --locked --out dist ${{ steps.interp.outputs.args }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.name }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  sdist:
+    name: sdist
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  # Every wheel is installed from the built files alone, in a clean venv on its
+  # own platform. `lint` is pure Rust and runs everywhere; `ci` and `stress` need
+  # Docker on Linux x86-64 and are exercised by the CI workflow instead.
+  test-wheels:
+    name: test ${{ matrix.name }} py${{ matrix.python }}
+    needs: wheels
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        name: [linux-x86_64, linux-aarch64, macos-x86_64, macos-arm64, windows-x64]
+        python: ['3.11', '3.14', '3.14t']
+        include:
+          - { name: linux-x86_64, os: ubuntu-latest }
+          - { name: linux-aarch64, os: ubuntu-24.04-arm }
+          - { name: macos-x86_64, os: macos-15-intel }
+          - { name: macos-arm64, os: macos-14 }
+          - { name: windows-x64, os: windows-latest }
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout: fixtures/clean/clean-mutex
+      - uses: actions/setup-python@v6
+        id: py
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v5
+        with:
+          name: wheels-${{ matrix.name }}
+          path: dist
+      - name: install the wheel and run it
+        shell: bash
+        env:
+          PY: ${{ steps.py.outputs.python-path }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          "$PY" -m venv "$RUNNER_TEMP/venv"
+          if [ "$RUNNER_OS" = Windows ]; then bin="$RUNNER_TEMP/venv/Scripts"; else bin="$RUNNER_TEMP/venv/bin"; fi
+          "$bin/python" -m pip install --no-index --only-binary :all: --find-links dist ftcheck
+          "$bin/python" -m pip list
+          test "$("$bin/ftcheck" --version)" = "ftcheck ${TAG#v}"
+          "$bin/ftcheck" lint fixtures/clean/clean-mutex
+
+  test-sdist:
+    name: test sdist
+    needs: sdist
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+          sparse-checkout: fixtures/clean/clean-mutex
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@v5
+        with:
+          name: sdist
+          path: dist
+      - name: build from the sdist alone and run it
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          python -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/python" -m pip install dist/*.tar.gz
+          test "$("$RUNNER_TEMP/venv/bin/ftcheck" --version)" = "ftcheck ${TAG#v}"
+          "$RUNNER_TEMP/venv/bin/ftcheck" lint fixtures/clean/clean-mutex
+
+  publish:
+    name: publish to PyPI
+    needs: [test-wheels, test-sdist]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: '{wheels-*,sdist}'
+          path: dist
+          merge-multiple: true
+      - run: ls -l dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true
+
+  github-release:
+    name: GitHub release
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: '{wheels-*,sdist}'
+          path: dist
+          merge-multiple: true
+      - name: notes from the CHANGELOG section for this version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          awk -v v="$version" '
+            $0 ~ "^## " v " " { on = 1; next }
+            on && /^## /     { exit }
+            on               { print }
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          test -s "$RUNNER_TEMP/notes.md"
+      - name: create the release with every artifact attached
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "ftcheck ${TAG#v}" \
+            --notes-file "$RUNNER_TEMP/notes.md" \
+            --verify-tag

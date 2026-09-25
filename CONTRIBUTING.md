@@ -20,7 +20,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ruff check python/ tests/
 pytest tests/
-./scripts/check-private.sh
+./scripts/check-publish-guards.sh
 ./scripts/check-headers.sh
 for d in fixtures/*/*/; do (cd "$d" && cargo check -q) || exit 1; done
 

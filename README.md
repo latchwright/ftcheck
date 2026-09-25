@@ -190,7 +190,7 @@ version and not on the code.
 ```console
 cargo test --workspace     # rust unit tests
 pytest tests/              # contract, CLI and ground-truth suites
-./scripts/check-private.sh # publish guards
+./scripts/check-publish-guards.sh  # publish guards
 
 docker build -f docker/Dockerfile -t ftcheck-tsan .
 FTCHECK_TSAN=1 pytest tests/test_tsan_ground_truth.py   # every fixture under TSan

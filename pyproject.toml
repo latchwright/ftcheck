@@ -11,10 +11,6 @@ requires-python = ">=3.11"
 license = "MIT OR Apache-2.0"
 license-files = ["LICENSE-MIT", "LICENSE-APACHE"]
 classifiers = [
-    # This is a registered PyPI classifier that causes the index to REJECT the
-    # upload. It is an enforced publish guard, not a comment. See
-    # scripts/check-private.sh, which asserts it is still here.
-    "Private :: Do Not Upload",
     "Programming Language :: Rust",
     "Programming Language :: Python :: 3",
 ]
