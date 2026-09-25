@@ -249,4 +249,5 @@ GitHub.
   scripts is; a system library or a wheel dependency (numpy, for example) is not, and races
   inside it can be missed. The upstream project publishes `numpy-tsan` and `scipy-tsan`
   images for that case.
-- **Linux x86-64 only** for now.
+- **Linux x86-64 only** for now, because the upstream ThreadSanitizer images are. `lint`
+  and `matrix` run wherever the package installs.

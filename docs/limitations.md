@@ -12,7 +12,7 @@ Never *"safe"*. A test asserts that the word does not appear in the terminal sum
 
 | Command | State |
 |---|---|
-| `ftcheck lint` | **Works.** FT001 and FT002 at `certain`, FT003 at `likely` |
+| `ftcheck lint` | **Works**, on every platform with a wheel. FT001 and FT002 at `certain`, FT003 at `likely` |
 | `ftcheck ci` | **Works**, Linux x86-64, inside the `docker/` image or an equivalent |
 | `ftcheck stress` | **Works**, same environment as `ci`. See [stress.md](stress.md) |
 | `ftcheck matrix` | **Works** as a generator; its output has not yet run on GitHub. See [matrix.md](matrix.md) |

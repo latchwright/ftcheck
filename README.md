@@ -1,6 +1,6 @@
 # ftcheck
 
-> **Pre-release.** Read [docs/limitations.md](docs/limitations.md) before trusting any output.
+> **Alpha (0.1).** Read [docs/limitations.md](docs/limitations.md) before trusting any output.
 
 `ftcheck` looks for free-threading bugs in Rust/PyO3 extensions: data races, crashes,
 hangs and panics that appear only when Python threads really run in parallel.
@@ -24,6 +24,20 @@ already exists: [`nascheme/cpython_sanity`](https://github.com/nascheme/cpython_
 publishes `ghcr.io/nascheme/cpython-tsan`, both the py-free-threading guide and the PyO3
 guide recommend it, and NumPy's CI already uses it. `ftcheck ci` consumes that image and
 adds only the Rust layer.
+
+## Install
+
+```console
+$ pip install ftcheck        # or: uv tool install ftcheck
+```
+
+Wheels are published for CPython 3.11 and later, including free-threaded 3.14, on Linux
+(x86-64, aarch64), macOS (x86-64, arm64) and Windows (x86-64). What runs where:
+
+| Command | Where it runs |
+|---|---|
+| `ftcheck lint`, `ftcheck matrix` | Every platform with a wheel. No Docker, no Rust toolchain. |
+| `ftcheck ci`, `ftcheck stress` | Linux x86-64 with Docker, inside the `ftcheck-tsan` image below. They need a ThreadSanitizer-instrumented free-threaded CPython and a matching nightly Rust, which the image provides; the installed package alone does not. |
 
 ## Quick start
 
@@ -55,8 +69,7 @@ What each part is for:
 - If your crate is not at the repository root, pass its directory (`/src/bindings/python`)
   and still mount the whole repository, so path dependencies resolve.
 
-`lint` and `matrix` also run without Docker: `pip install /path/to/ftcheck-checkout`
-(needs Rust and Python ≥ 3.11), then `ftcheck lint .`.
+`lint` and `matrix` also run without Docker: `pip install ftcheck`, then `ftcheck lint .`.
 
 ## What works today
 

@@ -97,7 +97,7 @@ because tests assert line numbers inside them.
 ## What the repository is for
 
 Design notes under `docs/` are engineering records: they state a decision and the reason for
-it. The repository carries no commercial content. A pre-release banner and an honest
+it. The repository carries no commercial content. A status banner and an honest
 limitations page are the only positioning the README does.
 
 ## What the tool is not allowed to say

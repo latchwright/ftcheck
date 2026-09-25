@@ -44,9 +44,16 @@ First release.
   to 67% on rules learned from the rest — measured on the same projects, so not an
   independent figure.
 
+### Packaging
+
+- Wheels on PyPI for CPython 3.11+ (one abi3 wheel per platform) and free-threaded 3.14
+  (cp314t) on Linux x86-64 and aarch64, macOS x86-64 and arm64, and Windows x86-64, plus
+  an sdist. Only the Python package is published; the Rust crates are internal.
+
 ### Known limitations
 
-Linux x86-64 only. The historical PyO3 races (#4894, the BorrowFlag race) are not yet
+`ci` and `stress` run on Linux x86-64 only, inside the Docker image; `lint` and `matrix`
+run on every platform with a wheel. The historical PyO3 races (#4894, the BorrowFlag race) are not yet
 reproduced: they need a 3.13t sanitizer image the upstream registry cannot currently
 serve. The Action and `matrix` output have not yet run on GitHub. See
 [docs/limitations.md](docs/limitations.md).
