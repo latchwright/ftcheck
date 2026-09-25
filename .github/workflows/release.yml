@@ -120,8 +120,8 @@ jobs:
           if-no-files-found: error
 
   # Every wheel is installed from the built files alone, in a clean venv on its
-  # own platform. `lint` is pure Rust and runs everywhere; `ci` and `stress` need
-  # Docker on Linux x86-64 and are exercised by the CI workflow instead.
+  # own platform. `lint` and `matrix` need no Docker and run everywhere; `ci` and
+  # `stress` need Docker on Linux x86-64 and are exercised by the CI workflow.
   test-wheels:
     name: test ${{ matrix.name }} py${{ matrix.python }}
     needs: wheels
@@ -165,6 +165,8 @@ jobs:
           "$bin/python" -m pip list
           test "$("$bin/ftcheck" --version)" = "ftcheck ${TAG#v}"
           "$bin/ftcheck" lint fixtures/clean/clean-mutex
+          "$bin/ftcheck" matrix fixtures/clean/clean-mutex > "$RUNNER_TEMP/matrix.yml"
+          test -s "$RUNNER_TEMP/matrix.yml"
 
   test-sdist:
     name: test sdist
