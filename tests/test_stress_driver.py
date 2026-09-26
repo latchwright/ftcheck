@@ -507,3 +507,51 @@ def test_mutator_threads_keep_their_name_within_fifteen_characters(tmp_path):
 def test_json_groups_list_what_raised_on_every_call(tmp_path):
     g = group(run_driver(tmp_path), "standin.Counter")
     assert "standin.Counter.reject" in g["raised_all"]
+
+
+def test_each_panic_is_recorded_with_its_thread_and_every_message(tmp_path):
+    """The log's panic lines carry the native thread id; the driver records
+    which callable panicked on which thread, in order, so the two can be
+    joined. Every distinct message is kept, with a count, not only the first."""
+    (tmp_path / "panicky.py").write_text(textwrap.dedent(
+        '''
+        import threading
+
+        class PanicException(BaseException):
+            """Named like pyo3_runtime.PanicException."""
+
+        class Shelf:
+            def __init__(self):
+                self.n = 0
+            def left(self):
+                self.n += 1
+                raise PanicException("left " + ("odd" if self.n % 2 else "even"))
+            def right(self):
+                return 1
+        '''
+    ))
+    result = run_driver(tmp_path, modules=["panicky"], skip={}, threads=2, iterations=10)
+    left = "panicky.Shelf.left"
+    assert set(result["panics"][left]) == {"left odd", "left even"}
+    assert sum(result["panics"][left].values()) == result["exceptions"][left]["PanicException"]
+    recorded = [run for runs in result["panic_threads"].values() for run in runs]
+    assert {q for q, _, _ in recorded} == {left}, "only panicking calls are recorded"
+    assert sum(n for _, _, n in recorded) == result["exceptions"][left]["PanicException"]
+    assert all(tid.isdigit() for tid in result["panic_threads"])
+
+
+def test_a_thread_past_the_record_cap_records_nothing_more(monkeypatch):
+    """Regression: merging a later panic into the last run after the cap made
+    the record skip calls the log still had, and the join then filed one
+    callable's panics at the other's site."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("ftcheck_driver", DRIVER)
+    driver = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(driver)
+    monkeypatch.setattr(driver, "_MAX_PANIC_RUNS", 2)
+    counters = driver.Counters()
+    for qual in ("a", "b", "a", "b", "a"):
+        counters.record(qual, "PanicException", "boom", tid=7)
+    assert counters.panic_threads == {"7": [["a", "boom", 1], ["b", "boom", 1]]}
+    assert counters.panics == {"a": {"boom": 3}, "b": {"boom": 2}}

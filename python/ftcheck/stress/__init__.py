@@ -218,29 +218,85 @@ def _hang_finding(step: str, threads: int, seed: int) -> dict:
     }
 
 
+# `thread '<name>' (<tid>) panicked at <file>:<line>:<column>:` then the
+# message. Older Rust prints no thread id.
 _PANIC_AT = re.compile(
+    r"(?:thread '[^'\n]*'(?: \((?P<tid>\d+)\))? )?"
     r"panicked at (?P<file>[^\n]+?):(?P<line>\d+):(?P<column>\d+):\n(?P<message>[^\n]*)"
 )
+# How far past a thread's last matched panic line the next one is looked for.
+# Extra lines on a thread (a panic the extension caught itself) are skipped.
+_JOIN_WINDOW = 16
 
 
-def panic_locations(log_text: str) -> dict[str, dict]:
-    """Panic message -> where it panicked, from the Rust panic lines in the log.
+def panic_locations(log_text: str) -> list[dict]:
+    """Every Rust panic line in the log, in order: where, and on which thread.
 
     `PanicException` carries the message but not the location; Rust prints
-    both to stderr (`thread '...' panicked at src/lib.rs:40:17:` then the
-    message), which the driver log captures.
+    both to stderr, which the driver log captures, with the native thread id
+    the driver also records for each panicking call.
     """
-    found: dict[str, dict] = {}
+    found = []
     for m in _PANIC_AT.finditer(log_text):
-        found.setdefault(
-            m.group("message").strip(),
-            {"file": m.group("file"), "line": int(m.group("line")), "column": int(m.group("column"))},
+        found.append(
+            {
+                "tid": int(m.group("tid")) if m.group("tid") else None,
+                "file": m.group("file"),
+                "line": int(m.group("line")),
+                "column": int(m.group("column")),
+                "message": m.group("message").strip(),
+            }
         )
     return found
 
 
+def _same_message(logged: str, raised: str) -> bool:
+    # The log holds the first line of the message; the driver keeps 300 characters.
+    return logged[:300] == raised.split("\n", 1)[0].strip()
+
+
+def _join(result: dict, events: list[dict], wanted: set[str]) -> tuple[dict, set[int]]:
+    """(qual -> {event index of the site: panics there}, consumed event indices).
+
+    Each thread's panicking calls, in order, are matched to that thread's
+    panic lines, in order, so a site is known per call rather than guessed
+    from the message.
+    """
+    by_tid: dict[int, list[int]] = {}
+    for i, e in enumerate(events):
+        if e["tid"] is not None:
+            by_tid.setdefault(e["tid"], []).append(i)
+    located: dict[str, dict[int, int]] = {}
+    consumed: set[int] = set()
+    for tid, runs in (result.get("panic_threads") or {}).items():
+        mine = by_tid.get(int(tid), [])
+        k = 0
+        for qual, message, count in runs:
+            for _ in range(count):
+                j = next(
+                    (
+                        j
+                        for j in range(k, min(k + _JOIN_WINDOW, len(mine)))
+                        if _same_message(events[mine[j]]["message"], message)
+                    ),
+                    None,
+                )
+                if j is None:
+                    continue
+                k = j + 1
+                consumed.add(mine[j])
+                if qual in wanted:
+                    site = located.setdefault(qual, {})
+                    site[mine[j]] = site.get(mine[j], 0) + 1
+    return located, consumed
+
+
+def _site_key(event: dict) -> str:
+    return f"{event['file']}:{event['line']}"
+
+
 def panic_findings(
-    result: dict | None, threads: int, seed: int, locations: dict[str, dict] | None = None
+    result: dict | None, threads: int, seed: int, locations: list[dict] | None = None
 ) -> list[dict]:
     """Rust panics a callable raised only when driven from many threads.
 
@@ -250,56 +306,96 @@ def panic_findings(
     panic the baseline also raised is how the method behaves
     with those arguments, and is left alone.
 
-    Callables that panic at the same source location are one finding: one
-    `borrow()` shared by many methods produces the same panic in each of them.
+    One finding per source location, naming every callable that panicked
+    there with its own count: one `borrow()` shared by many methods produces
+    the same panic in each of them. The site of each panic comes from joining
+    the driver's per-thread record with the thread id in Rust's panic line.
+    Without thread ids (older Rust), a panic is located by its message, and
+    when several sites share the message the finding names them all.
     """
     if not result:
         return []
-    locations = locations or {}
-    groups: dict[str, dict] = {}
+    events = locations or []
+    totals: dict[str, int] = {}
     for group in result.get("groups", []):
         serial = group.get("serial_exceptions", {})
         for qual in group.get("driven", []):
             n = result.get("exceptions", {}).get(qual, {}).get("PanicException", 0)
-            if not n or "PanicException" in serial.get(qual, []):
-                continue
-            calls = result.get("calls", {}).get(qual, 0)
-            message = result.get("messages", {}).get(qual, {}).get("PanicException", "")
-            where = locations.get(message.strip())
-            key = f"{where['file']}:{where['line']}" if where else f"message:{message}"
-            entry = groups.setdefault(
-                key, {"where": where, "message": message, "callables": [], "panics": 0, "calls": 0}
-            )
-            entry["callables"].append(qual)
-            entry["panics"] += n
-            entry["calls"] += calls
-    out = []
-    for entry in groups.values():
-        callables = entry["callables"]
-        where = entry["where"]
-        named = ", ".join(f"`{q}`" for q in callables[:5]) + (
-            f" and {len(callables) - 5} more" if len(callables) > 5 else ""
-        )
-        at = f" at {where['file']}:{where['line']}" if where else ""
-        out.append(
-            {
-                "rule": "stress/panic",
-                "message": (
-                    f"Panicked{at} in {entry['panics']} of {entry['calls']} calls to {named} "
-                    f"when driven from {threads} threads, and never in the single-threaded "
-                    f"baseline: {entry['message'] or '(no message)'}. Replay with --replay {seed} "
-                    f"--threads {threads}."
-                ),
-                "confidence": "certain",
-                "producer": "stress",
-                "symbol": callables[0],
-                "primary": where or {"file": "<stress driver>", "line": 1, "column": 1},
-                "stacks": [],
-                "justification": None,
-                "occurrences": len(callables),
-            }
-        )
-    return out
+            if n and "PanicException" not in serial.get(qual, []):
+                totals[qual] = n
+    located, consumed = _join(result, events, set(totals))
+
+    groups: dict[str, dict] = {}
+
+    def add(key, sites, message, qual, n):
+        entry = groups.setdefault(key, {"sites": sites, "message": message, "callables": {}})
+        entry["callables"][qual] = entry["callables"].get(qual, 0) + n
+
+    for qual, n in totals.items():
+        for index, count in located.get(qual, {}).items():
+            event = events[index]
+            add(_site_key(event), [event], event["message"], qual, count)
+        rest = n - sum(located.get(qual, {}).values())
+        if rest <= 0:
+            continue
+        # Not joined to a line: located by message, naming every candidate site.
+        raised = result.get("panics", {}).get(qual) or {
+            result.get("messages", {}).get(qual, {}).get("PanicException", ""): rest
+        }
+        pool = [e for i, e in enumerate(events) if i not in consumed] or events
+        sites = {}
+        for message in raised:
+            for e in pool:
+                if _same_message(e["message"], message):
+                    sites.setdefault(_site_key(e), e)
+        first = next(iter(raised), "")
+        if not sites:
+            add(f"message:{first}", [], first, qual, rest)
+        else:
+            ordered = [sites[k] for k in sorted(sites)]
+            add(" | ".join(sorted(sites)), ordered, ordered[0]["message"] or first, qual, rest)
+
+    calls = result.get("calls", {})
+    return [_panic_finding(entry, calls, threads, seed) for entry in groups.values()]
+
+
+def _panic_finding(entry: dict, calls: dict, threads: int, seed: int) -> dict:
+    callables = entry["callables"]
+    names = list(callables)
+    total = sum(callables.values())
+    n_calls = sum(calls.get(q, 0) for q in names)
+    if len(names) == 1:
+        named = f"{total} of {n_calls} calls to `{names[0]}`"
+    else:
+        each = [f"`{q}` ({callables[q]} of {calls.get(q, 0)})" for q in names[:5]]
+        more = f" and {len(names) - 5} more" if len(names) > 5 else ""
+        named = f"{total} of {n_calls} calls to {', '.join(each)}{more}"
+    sites = entry["sites"]
+    if len(sites) == 1:
+        at = f" at {_site_key(sites[0])}"
+    elif sites:
+        at = f" at one of {', '.join(_site_key(e) for e in sites)} (the log does not say which)"
+    else:
+        at = ""
+    if sites:
+        primary = {k: sites[0][k] for k in ("file", "line", "column")}
+    else:
+        primary = {"file": "<stress driver>", "line": 1, "column": 1}
+    return {
+        "rule": "stress/panic",
+        "message": (
+            f"Panicked{at} in {named} when driven from {threads} threads, and never in the "
+            f"single-threaded baseline: {entry['message'] or '(no message)'}. Replay with "
+            f"--replay {seed} --threads {threads}."
+        ),
+        "confidence": "certain",
+        "producer": "stress",
+        "symbol": names[0],
+        "primary": primary,
+        "stacks": [],
+        "justification": None,
+        "occurrences": len(names),
+    }
 
 
 def _crash_logged(tsan_dir: pathlib.Path) -> bool:

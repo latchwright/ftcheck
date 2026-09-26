@@ -130,6 +130,96 @@ def test_panics_at_one_location_are_one_finding_located_there():
     assert "`m.store.put`" in finding["message"] and "`m.store.get`" in finding["message"]
 
 
+def _two_site_result(panic_threads, **extra):
+    """Two callables on one type, both panicking with the same message."""
+    return {
+        "groups": [
+            {
+                "driven": ["m.Shelf.left", "m.Shelf.right"],
+                "serial_exceptions": {"m.Shelf.left": [], "m.Shelf.right": []},
+            }
+        ],
+        "calls": {"m.Shelf.left": 40, "m.Shelf.right": 60},
+        "exceptions": {
+            "m.Shelf.left": {"PanicException": 2},
+            "m.Shelf.right": {"PanicException": 1},
+        },
+        "messages": {
+            "m.Shelf.left": {"PanicException": "claim taken"},
+            "m.Shelf.right": {"PanicException": "claim taken"},
+        },
+        "panic_threads": panic_threads,
+        **extra,
+    }
+
+
+_TWO_SITES_LOG = (
+    "thread '<unnamed>' (101) panicked at src/lib.rs:16:39:\n"
+    "claim taken\n"
+    "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+    "\n"
+    "thread '<unnamed>' (102) panicked at src/lib.rs:22:39:\n"
+    "claim taken\n"
+    "\n"
+    "thread '<unnamed>' (101) panicked at src/lib.rs:16:39:\n"
+    "claim taken\n"
+)
+
+
+def test_two_sites_sharing_one_message_are_two_findings_joined_by_thread():
+    """Matched by message alone, both callables were filed at whichever site
+    panicked first, and the second site never appeared."""
+    from ftcheck.stress import panic_findings, panic_locations
+
+    result = _two_site_result(
+        {"101": [["m.Shelf.left", "claim taken", 2]], "102": [["m.Shelf.right", "claim taken", 1]]}
+    )
+    findings = panic_findings(result, threads=8, seed=1, locations=panic_locations(_TWO_SITES_LOG))
+    by_line = {f["primary"]["line"]: f for f in findings}
+    assert sorted(by_line) == [16, 22]
+    assert by_line[16]["symbol"] == "m.Shelf.left"
+    assert "2 of 40 calls to `m.Shelf.left`" in by_line[16]["message"]
+    assert "m.Shelf.right" not in by_line[16]["message"]
+    assert "1 of 60 calls to `m.Shelf.right`" in by_line[22]["message"]
+
+
+def test_a_callable_that_panicked_at_two_sites_is_counted_at_each():
+    """One thread that ran both callables (the mix phase): its panics are
+    joined in order, so each site gets exactly the calls that panicked there."""
+    from ftcheck.stress import panic_findings, panic_locations
+
+    log = (
+        "thread '<unnamed>' (103) panicked at src/lib.rs:16:39:\nclaim taken\n"
+        "thread '<unnamed>' (103) panicked at src/lib.rs:22:39:\nclaim taken\n"
+        "thread '<unnamed>' (103) panicked at src/lib.rs:22:39:\nclaim taken\n"
+    )
+    result = _two_site_result(
+        {"103": [["m.Shelf.left", "claim taken", 1], ["m.Shelf.left", "claim taken", 1]]},
+    )
+    result["exceptions"] = {"m.Shelf.left": {"PanicException": 2}}
+    result["panic_threads"]["103"].insert(1, ["m.Shelf.right", "claim taken", 1])
+    result["exceptions"]["m.Shelf.right"] = {"PanicException": 1}
+    findings = panic_findings(result, threads=8, seed=1, locations=panic_locations(log))
+    by_line = {f["primary"]["line"]: f for f in findings}
+    assert sorted(by_line) == [16, 22]
+    assert "1 of 40 calls to `m.Shelf.left`" in by_line[16]["message"]
+    assert "`m.Shelf.right`" in by_line[22]["message"]
+    assert "`m.Shelf.left`" in by_line[22]["message"]
+
+
+def test_without_thread_ids_every_site_with_the_message_is_listed():
+    """Older Rust prints no thread id. The site cannot be told apart then, so
+    the finding names every candidate instead of picking one silently."""
+    from ftcheck.stress import panic_findings, panic_locations
+
+    log = _TWO_SITES_LOG.replace(" (101)", "").replace(" (102)", "")
+    result = _two_site_result({})
+    del result["panic_threads"]
+    (finding,) = panic_findings(result, threads=8, seed=1, locations=panic_locations(log))
+    assert "src/lib.rs:16" in finding["message"] and "src/lib.rs:22" in finding["message"]
+    assert "3 of 100 calls" in finding["message"]
+
+
 def test_declared_test_dependencies_are_found_in_the_usual_places(tmp_path):
     """A first user's two projects both failed test collection: the venv held
     only the wheel and the runner."""
