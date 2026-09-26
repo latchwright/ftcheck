@@ -1,0 +1,12 @@
+[package]
+name = "stress-panic-two-sites"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "stress_panic_two_sites"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.29", features = ["extension-module"] }
