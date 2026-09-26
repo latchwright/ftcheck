@@ -292,6 +292,24 @@ def test_a_backtrace_in_the_log_locates_the_panic_at_your_frame():
     assert symbols == ["tinyqueue::Queue::pop", "examplelib::Shelf::left"]
 
 
+def test_a_panic_while_mutators_ran_says_so():
+    """The baseline never sees a mutator's transient state: the message must
+    say mutators were running, and point at the rule they must follow."""
+    from ftcheck.stress import panic_findings, panic_locations
+
+    result = _two_site_result(
+        {"101": [["m.Shelf.left", "claim taken", 2]], "102": [["m.Shelf.right", "claim taken", 1]]},
+        mutators=["churn"],
+    )
+    findings = panic_findings(result, threads=8, seed=1, locations=panic_locations(_TWO_SITES_LOG))
+    for f in findings:
+        assert "Mutators were running (churn)" in f["message"]
+        assert "valid at every instant" in f["message"]
+    quiet = _two_site_result({"101": [["m.Shelf.left", "claim taken", 2]]}, mutators=[])
+    for f in panic_findings(quiet, threads=8, seed=1, locations=panic_locations(_TWO_SITES_LOG)):
+        assert "Mutators" not in f["message"]
+
+
 def test_declared_test_dependencies_are_found_in_the_usual_places(tmp_path):
     """A first user's two projects both failed test collection: the venv held
     only the wheel and the runner."""

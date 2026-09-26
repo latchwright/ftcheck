@@ -405,7 +405,10 @@ def panic_findings(
             add(" | ".join(sorted(sites)), ordered, ordered[0]["message"] or first, qual, rest)
 
     calls = result.get("calls", {})
-    return [_panic_finding(entry, calls, threads, seed) for entry in groups.values()]
+    mutators = result.get("mutators") or []
+    return [
+        _panic_finding(entry, calls, mutators, threads, seed) for entry in groups.values()
+    ]
 
 
 def _inside(dependency: str, site: dict) -> str:
@@ -439,7 +442,7 @@ def _your_frame(frames: list[dict]) -> tuple[dict | None, list[dict]]:
     return frames[first], [{"frames": frames[start : first + 1]}]
 
 
-def _panic_finding(entry: dict, calls: dict, threads: int, seed: int) -> dict:
+def _panic_finding(entry: dict, calls: dict, mutators: list, threads: int, seed: int) -> dict:
     callables = entry["callables"]
     names = list(callables)
     total = sum(callables.values())
@@ -467,6 +470,13 @@ def _panic_finding(entry: dict, calls: dict, threads: int, seed: int) -> dict:
         at = f" at one of {', '.join(_site_key(e) for e in sites)} (the log does not say which)"
     else:
         at = ""
+    mutated = ""
+    if mutators:
+        mutated = (
+            f" Mutators were running ({', '.join(mutators)}): if one can leave the shared "
+            "inputs invalid, this panic may be its doing rather than contention. Mutators "
+            "must keep the inputs valid at every instant."
+        )
     if yours:
         primary = dict(yours["location"])
     elif sites:
@@ -478,7 +488,7 @@ def _panic_finding(entry: dict, calls: dict, threads: int, seed: int) -> dict:
         "message": (
             f"Panicked{at} in {named} when driven from {threads} threads, and never in the "
             f"single-threaded baseline: {entry['message'] or '(no message)'}.{reached}"
-            f" Replay with --replay {seed} --threads {threads}{hint}."
+            f"{mutated} Replay with --replay {seed} --threads {threads}{hint}."
         ),
         "confidence": "certain",
         "producer": "stress",
