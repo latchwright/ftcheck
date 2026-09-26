@@ -4,6 +4,8 @@
 The logs in tests/data/tsan/ are unedited output of ThreadSanitizer running
 fixtures under ghcr.io/nascheme/cpython-tsan:3.14t with nightly-2026-01-15
 (LLVM 21 on both sides). The paths in them are the container's.
+mutator-numpy-copy.log is the exception: trimmed to two reports, with the
+extension's names and lines invented.
 """
 import pathlib
 
@@ -336,3 +338,172 @@ def test_a_thin_ffi_wrapper_is_not_the_primary_location():
     )
     (finding,), _, _ = to_findings([report], EXAMPLE, CRATE)
     assert finding["primary"]["file"] == "src/encode/model.rs"
+
+
+MUTATOR_COPY = ["memmove <null> (python3.14+0x9)",
+                "_contig_to_contig lowlevel_strided_loops.c (_multiarray_umath.cpython-314t-x86_64-linux-gnu.so+0x7)"]
+
+
+def test_a_bare_file_name_is_not_a_file_in_the_crate(tmp_path, monkeypatch):
+    """An uninstrumented library's debug info can name a source file with no
+    directory. Resolved against the working directory — the crate root, in
+    the image — it looked like a crate file and became the primary location.
+    The test must run from the crate root: that is what exposed it."""
+    root = str(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    # The dependency's side comes first, as it did in the report that exposed it.
+    report = _race(MUTATOR_COPY, [f"scan {root}/src/lib.rs:117:14 {EXT}"])
+    (finding,), _, _ = to_findings([report], EXAMPLE, root)
+    assert finding["primary"]["file"] == "src/lib.rs"
+    assert finding["primary"]["line"] == 117
+    files = [fr["location"]["file"] for s in finding["stacks"] for fr in s["frames"] if fr["location"]]
+    assert "lowlevel_strided_loops.c" in files, "kept as the symbolizer wrote it"
+
+
+# mutator-numpy-copy.log is trimmed and renamed from a real report: a mutator
+# (`ftm-refill_rows`) refills a numpy array in place from Python while two
+# methods of the extension read it through the buffer protocol. numpy's copy
+# loop has only a bare file name in its debug info.
+MUTATOR_LOG = "mutator-numpy-copy.log"
+
+
+def test_a_mutator_copying_into_a_foreign_buffer_is_a_harness_race():
+    """No CPython routine on the mutator's stack: numpy's copy loop calls
+    memmove. Still a content rewrite, not the extension's bug."""
+    from ftcheck.ci.tsan import HARNESS
+
+    reports = parse(load(MUTATOR_LOG))
+    assert len(reports) == 2
+    assert [attribute(r, EXAMPLE) for r in reports] == [HARNESS, HARNESS]
+    mine, reached, other = to_findings(reports, EXAMPLE, "/src")
+    assert mine == [] and reached == []
+    assert other and all(f["message"].startswith("A mutator rewrote") for f in other)
+
+
+def test_a_harness_race_is_located_at_the_extensions_read():
+    """The mutator's side is the harness; the line worth reading is yours."""
+    _, _, other = to_findings(parse(load(MUTATOR_LOG)), EXAMPLE, "/src")
+    assert sorted((f["primary"]["file"], f["primary"]["line"]) for f in other) == [
+        ("src/lib.rs", 117),
+        ("src/lib.rs", 141),
+    ]
+
+
+def test_a_mutator_that_resizes_while_copying_is_still_yours():
+    """A realloc on the mutator's side can free what the extension reads."""
+    report = _race(
+        [f"scan /tmp/c/src/lib.rs:117:14 {EXT}"],
+        [*MUTATOR_COPY, "PyArray_Resize shape.c (_multiarray_umath.cpython-314t-x86_64-linux-gnu.so+0x8)"],
+        writer_name="ftm-grow",
+    )
+    assert attribute(report, EXAMPLE) == YOURS
+
+
+def test_a_mutator_memmove_inside_a_cpython_container_is_still_yours():
+    """list.insert shifts items with memmove under the list's critical
+    section; an extension reading the list without one is at fault."""
+    report = _race(
+        [f"scan /tmp/c/src/lib.rs:117:14 {EXT}"],
+        ["__tsan_memmove <null> (python3.14+0x9)", f"list_ass_slice_lock_held /cpython/Objects/listobject.c:700:5 {PY}"],
+        writer_name="ftm-shift",
+    )
+    assert attribute(report, EXAMPLE) == YOURS
+
+
+def test_a_mutator_copying_through_the_extension_is_still_yours():
+    """With a frame of yours on the mutator's side, the copy is your code's."""
+    report = _race(
+        [f"scan /tmp/c/src/lib.rs:117:14 {EXT}"],
+        ["__tsan_memcpy <null> (python3.14+0x9)", f"fill /tmp/c/src/lib.rs:60:9 {EXT}"],
+        writer_name="ftm-fill",
+    )
+    assert attribute(report, EXAMPLE) == YOURS
+
+
+def test_a_harness_race_run_from_the_crate_root_is_not_located_in_the_dependency(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    text = load(MUTATOR_LOG).replace(" /src/src/", f" {tmp_path}/src/")
+    _, _, other = to_findings(parse(text), EXAMPLE, str(tmp_path))
+    assert other and {f["primary"]["file"] for f in other} == {"src/lib.rs"}
+
+
+PYO3_FFI = "/opt/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-ffi-0.26.0"
+
+
+def test_the_atomic_side_of_a_race_is_not_its_location():
+    """An atomic load racing a plain write: the plain write is the racy one."""
+    report = _race(
+        [f"_Py_atomic_load_ptr_relaxed /cpython/Include/cpython/pyatomic_gcc.h:513:10 {PY}",
+         f"list_get_item_ref /cpython/Objects/listobject.c:340:12 {PY}"],
+        [f"list_append /cpython/Objects/listobject.c:520:5 {PY}"],
+    )
+    _, _, (finding,) = to_findings([report], EXAMPLE, CRATE)
+    assert finding["symbol"] == "list_append"
+    assert finding["primary"] == {"file": "/cpython/Objects/listobject.c", "line": 520, "column": 5}
+
+
+def test_an_atomic_frame_in_a_pyatomic_header_is_skipped_too():
+    report = _race(
+        [f"atomic_load_relaxed /cpython/Include/cpython/pyatomic_std.h:90:10 {PY}"],
+        [f"list_append /cpython/Objects/listobject.c:520:5 {PY}"],
+    )
+    _, _, (finding,) = to_findings([report], EXAMPLE, CRATE)
+    assert finding["symbol"] == "list_append"
+
+
+def test_an_access_inside_pyo3_says_so():
+    """The race is still yours and still located in your code, but the access
+    itself is PyO3's, which a newer PyO3 may have changed."""
+    report = _race(
+        [f"PyList_GET_SIZE {PYO3_FFI}/src/cpython/listobject.rs:22:5 {EXT}",
+         f"count /tmp/c/src/lib.rs:30:9 {EXT}"],
+        [f"list_append /cpython/Objects/listobject.c:520:5 {PY}"],
+    )
+    assert attribute(report, EXAMPLE) == YOURS
+    (finding,), _, _ = to_findings([report], EXAMPLE, CRATE)
+    assert finding["primary"]["file"] == "src/lib.rs"
+    assert "inside pyo3-ffi 0.26.0 (`src/cpython/listobject.rs:22`)" in finding["message"]
+    assert "a newer PyO3 may change it" in finding["message"]
+
+
+def test_pyo3_further_down_the_stack_is_not_mentioned():
+    report = _race(
+        [f"count /tmp/c/src/lib.rs:30:9 {EXT}",
+         f"{{closure#0}} /opt/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-0.27.2/src/impl_/trampoline.rs:44:37 {EXT}"],
+        [f"list_append /cpython/Objects/listobject.c:520:5 {PY}"],
+    )
+    (finding,), _, _ = to_findings([report], EXAMPLE, CRATE)
+    assert "PyO3" not in finding["message"]
+
+
+def test_messages_name_the_threads():
+    """`thread T5` means nothing without the raw log; `ftm-refill_rows` says a
+    mutator did it."""
+    _, _, other = to_findings(parse(load(MUTATOR_LOG)), EXAMPLE, "/src")
+    assert other
+    for f in other:
+        assert "thread T5 (ftm-refill_rows)" in f["message"]
+        assert {s["thread"] for s in f["stacks"]} <= {"ftm-refill_rows", "ftw-pair-2", "ftw-pair-4"}
+
+
+def test_a_thread_without_a_name_keeps_its_id():
+    report = _race([f"count /tmp/c/src/lib.rs:30:9 {EXT}"], [f"count /tmp/c/src/lib.rs:31:9 {EXT}"])
+    (finding,), _, _ = to_findings([report], EXAMPLE, CRATE)
+    assert "by thread T1 in" in finding["message"]
+    assert sorted(s["thread"] for s in finding["stacks"]) == ["T1", "T2"]
+
+
+def test_the_text_summary_labels_stacks_with_thread_names():
+    import io
+    import types
+
+    from ftcheck.report.text import _render_findings
+
+    report = _race([f"count /tmp/c/src/lib.rs:30:9 {EXT}"], [f"count /tmp/c/src/lib.rs:31:9 {EXT}"],
+                   writer_name="ftw-pair-3")
+    mine, _, _ = to_findings([report], EXAMPLE, CRATE)
+    outcome = types.SimpleNamespace(warnings=[], findings=mine, reached=[], external=[])
+    out = io.StringIO()
+    _render_findings(outcome, out)
+    assert "thread 1 (T1):" in out.getvalue() or "thread 2 (T1):" in out.getvalue()
+    assert "(ftw-pair-3):" in out.getvalue()

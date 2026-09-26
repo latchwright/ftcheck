@@ -1,0 +1,76 @@
+==================
+WARNING: ThreadSanitizer: data race (pid=41)
+  Write of size 8 at 0x724800012300 by thread T5:
+    #0 memmove <null> (python3.14+0x60432)
+    #1 _contig_to_contig lowlevel_strided_loops.c (_multiarray_umath.cpython-314t-x86_64-linux-gnu.so+0x735c4)
+    #2 _PyEval_EvalFrameDefault /work/.pyenv/sources/3.14.7t/Python-3.14.7/Python/generated_cases.c.h:11503:27 (libpython3.14t.so.1.0+0x35495c)
+    #3 _PyEval_EvalFrame /work/.pyenv/sources/3.14.7t/Python-3.14.7/./Include/internal/pycore_ceval.h:120:16 (libpython3.14t.so.1.0+0x3328a8)
+    #4 _PyEval_Vector /work/.pyenv/sources/3.14.7t/Python-3.14.7/Python/ceval.c:2113:12 (libpython3.14t.so.1.0+0x3328a8)
+    #5 _PyFunction_Vectorcall /work/.pyenv/sources/3.14.7t/Python-3.14.7/Objects/call.c (libpython3.14t.so.1.0+0x12f621)
+    #6 context_run /work/.pyenv/sources/3.14.7t/Python-3.14.7/Python/context.c:725:29 (libpython3.14t.so.1.0+0x3892c2)
+
+  Previous read of size 8 at 0x724800012300 by thread T9:
+    #0 __tsan_memcpy <null> (python3.14+0x60952)
+    #1 copy_nonoverlapping<f64> /opt/rustup/toolchains/nightly-2026-01-15-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/ptr/mod.rs:547:14 (examplelib.cpython-314t-x86_64-linux-gnu.so+0x5d2786)
+    #2 to_vec<f64, alloc::alloc::Global> /opt/rustup/toolchains/nightly-2026-01-15-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/alloc/src/slice.rs:453:36 (examplelib.cpython-314t-x86_64-linux-gnu.so+0x5d2786)
+    #3 <examplecore::table::Table>::normalise /opt/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/examplecore-0.4.2/src/table.rs (examplelib.cpython-314t-x86_64-linux-gnu.so+0x5d2786)
+    #4 <examplecore::table::Table>::lookup /opt/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/examplecore-0.4.2/src/table.rs:212:18 (examplelib.cpython-314t-x86_64-linux-gnu.so+0x5e7e95)
+    #5 lookup /src/src/lib.rs:141:23 (examplelib.cpython-314t-x86_64-linux-gnu.so+0x6a2d34)
+    #6 <examplelib::PyTable>::__pymethod_lookup__ /src/src/lib.rs:88:1 (examplelib.cpython-314t-x86_64-linux-gnu.so+0x6a2d34)
+    #7 {closure#0} /opt/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-0.27.2/src/impl_/trampoline.rs:44:37 (examplelib.cpython-314t-x86_64-linux-gnu.so+0x67fd0a)
+    #8 pyo3::impl_::trampoline::trampoline::<pyo3::impl_::trampoline::fastcall_with_keywords::{closure#0}, *mut pyo3_ffi::object::PyObject> /opt/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-0.27.2/src/impl_/trampoline.rs:190:9 (examplelib.cpython-314t-x86_64-linux-gnu.so+0x6b2d13)
+    #9 fastcall_with_keywords /opt/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-0.27.2/src/impl_/trampoline.rs:44:21 (examplelib.cpython-314t-x86_64-linux-gnu.so+0x6b2d13)
+    #10 method_vectorcall_FASTCALL_KEYWORDS /work/.pyenv/sources/3.14.7t/Python-3.14.7/Objects/descrobject.c:421:24 (libpython3.14t.so.1.0+0x1486c3)
+
+  Location is heap block of size 384 at 0x724800012300 allocated by main thread:
+    #0 malloc <null> (python3.14+0x63254)
+    #1 _PyMem_RawMalloc /work/.pyenv/sources/3.14.7t/Python-3.14.7/Objects/obmalloc.c:63:12 (libpython3.14t.so.1.0+0x209c9d)
+    #2 default_malloc alloc.c (_multiarray_umath.cpython-314t-x86_64-linux-gnu.so+0x176ba0)
+    #3 array_multiply number.c (_multiarray_umath.cpython-314t-x86_64-linux-gnu.so+0x223fd5)
+
+  Thread T5 'ftm-refill_rows' (tid=21, running) created by main thread at:
+    #0 pthread_create <null> (python3.14+0x655de)
+    #1 do_start_joinable_thread /work/.pyenv/sources/3.14.7t/Python-3.14.7/Python/thread_pthread.h:289:14 (libpython3.14t.so.1.0+0x43746a)
+
+  Thread T9 'ftw-pair-2' (tid=25, running) created by main thread at:
+    #0 pthread_create <null> (python3.14+0x655de)
+    #1 do_start_joinable_thread /work/.pyenv/sources/3.14.7t/Python-3.14.7/Python/thread_pthread.h:289:14 (libpython3.14t.so.1.0+0x43746a)
+
+SUMMARY: ThreadSanitizer: data race (/work/.pyenv/versions/3.14.7t/bin/python3.14+0x60432) in memmove
+==================
+WARNING: ThreadSanitizer: data race (pid=41)
+  Read of size 8 at 0x724800012300 by thread T11:
+    #0 all<f64, examplecore::table::{impl#2}::scan::{closure_env#0}> /opt/rustup/toolchains/nightly-2026-01-15-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/slice/iter/macros.rs:315:25 (examplelib.cpython-314t-x86_64-linux-gnu.so+0x5e79d5)
+    #1 <examplecore::table::Table>::scan /opt/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/examplecore-0.4.2/src/table.rs:174:26 (examplelib.cpython-314t-x86_64-linux-gnu.so+0x5e79d5)
+    #2 scan /src/src/lib.rs:117:14 (examplelib.cpython-314t-x86_64-linux-gnu.so+0x697e54)
+    #3 <examplelib::PyTable>::__pymethod_scan__ /src/src/lib.rs:88:1 (examplelib.cpython-314t-x86_64-linux-gnu.so+0x697e54)
+    #4 {closure#0} /opt/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-0.27.2/src/impl_/trampoline.rs:44:37 (examplelib.cpython-314t-x86_64-linux-gnu.so+0x67fd0a)
+    #5 pyo3::impl_::trampoline::trampoline::<pyo3::impl_::trampoline::fastcall_with_keywords::{closure#0}, *mut pyo3_ffi::object::PyObject> /opt/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-0.27.2/src/impl_/trampoline.rs:190:9 (examplelib.cpython-314t-x86_64-linux-gnu.so+0x6b2d13)
+    #6 fastcall_with_keywords /opt/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-0.27.2/src/impl_/trampoline.rs:44:21 (examplelib.cpython-314t-x86_64-linux-gnu.so+0x6b2d13)
+    #7 method_vectorcall_FASTCALL_KEYWORDS /work/.pyenv/sources/3.14.7t/Python-3.14.7/Objects/descrobject.c:421:24 (libpython3.14t.so.1.0+0x1486c3)
+
+  Previous write of size 8 at 0x724800012300 by thread T5:
+    #0 memmove <null> (python3.14+0x60432)
+    #1 _contig_to_contig lowlevel_strided_loops.c (_multiarray_umath.cpython-314t-x86_64-linux-gnu.so+0x735c4)
+    #2 _PyEval_EvalFrameDefault /work/.pyenv/sources/3.14.7t/Python-3.14.7/Python/generated_cases.c.h:11503:27 (libpython3.14t.so.1.0+0x35495c)
+    #3 _PyEval_EvalFrame /work/.pyenv/sources/3.14.7t/Python-3.14.7/./Include/internal/pycore_ceval.h:120:16 (libpython3.14t.so.1.0+0x3328a8)
+    #4 _PyEval_Vector /work/.pyenv/sources/3.14.7t/Python-3.14.7/Python/ceval.c:2113:12 (libpython3.14t.so.1.0+0x3328a8)
+    #5 _PyFunction_Vectorcall /work/.pyenv/sources/3.14.7t/Python-3.14.7/Objects/call.c (libpython3.14t.so.1.0+0x12f621)
+    #6 context_run /work/.pyenv/sources/3.14.7t/Python-3.14.7/Python/context.c:725:29 (libpython3.14t.so.1.0+0x3892c2)
+
+  Location is heap block of size 384 at 0x724800012300 allocated by main thread:
+    #0 malloc <null> (python3.14+0x63254)
+    #1 _PyMem_RawMalloc /work/.pyenv/sources/3.14.7t/Python-3.14.7/Objects/obmalloc.c:63:12 (libpython3.14t.so.1.0+0x209c9d)
+    #2 default_malloc alloc.c (_multiarray_umath.cpython-314t-x86_64-linux-gnu.so+0x176ba0)
+    #3 array_multiply number.c (_multiarray_umath.cpython-314t-x86_64-linux-gnu.so+0x223fd5)
+
+  Thread T11 'ftw-pair-4' (tid=27, running) created by main thread at:
+    #0 pthread_create <null> (python3.14+0x655de)
+    #1 do_start_joinable_thread /work/.pyenv/sources/3.14.7t/Python-3.14.7/Python/thread_pthread.h:289:14 (libpython3.14t.so.1.0+0x43746a)
+
+  Thread T5 'ftm-refill_rows' (tid=21, running) created by main thread at:
+    #0 pthread_create <null> (python3.14+0x655de)
+    #1 do_start_joinable_thread /work/.pyenv/sources/3.14.7t/Python-3.14.7/Python/thread_pthread.h:289:14 (libpython3.14t.so.1.0+0x43746a)
+
+SUMMARY: ThreadSanitizer: data race (/work/.pyenv/versions/3.14.7t/bin/python3.14+0x60432) in memmove
+==================

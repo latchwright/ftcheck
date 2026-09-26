@@ -115,7 +115,9 @@ Each report is placed by looking at where each conflicting access actually happe
   of your extension modules. Interceptors live in the interpreter binary, so a race on a
   buffer your C code writes through `snprintf` (top frame: TSan's `vsnprintf`) is yours.
   PyO3, and the standard library under `-Zbuild-std`, are compiled into your module, so
-  races there are yours too — you shipped them. These fail the run.
+  races there are yours too — you shipped them. These fail the run. When the access
+  itself is in PyO3's source, the message says so and names the PyO3 version, since what
+  PyO3 makes atomic changes between releases.
 - **Reached from yours** — both accesses happen inside CPython or another library, and
   **every** racing thread passed through your module further down its stack. For
   example, PyO3 methods calling `decimal.Decimal()` from many threads race inside

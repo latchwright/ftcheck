@@ -66,6 +66,13 @@ _CONTENT_WRITERS = (
     "bytearray_setslice_linear", "bytearray_setslice", "bytearray_ass_subscript",
     "copy_base", "copy_single", "memory_ass_sub", "bytearray_setitem",
 )  # fmt: skip
+# TSan's interceptors for the copy primitives, as the symbolizer names them.
+_COPY_PRIMITIVES = frozenset(
+    p for name in ("memmove", "memcpy", "memset") for p in (name, "__tsan_" + name)
+)
+# A frame that frees, reallocates or resizes: not a rewrite in place.
+_RELEASES = re.compile(r"free|realloc|resize|dealloc", re.IGNORECASE)
+_INTERPRETER_LIBRARY = re.compile(r"^libpython")
 # The other access being an allocation means the memory was freed and reused:
 # the extension touched an object that no longer exists.
 _ALLOCATORS = (
@@ -79,6 +86,8 @@ _MODULE = re.compile(r"\((?P<module>[^()\s]+)\+0x[0-9a-f]+\)\s*$")
 _BUILD_ID = re.compile(r"\s*\(BuildId: [0-9a-f]+\)\s*$")
 _ADDRESS = re.compile(r" at 0x[0-9a-f]+")
 _CODEGEN_UNIT = re.compile(r"^[^/]*-cgu\.\d+$")
+# A source file of PyO3 itself, as Cargo unpacks it: `.../pyo3-ffi-0.26.0/src/...`.
+_PYO3_SOURCE = re.compile(r"/(?P<crate>pyo3(?:-ffi)?)-(?P<version>\d+\.\d+\.\d+[^/]*)/(?P<rest>.+)$")
 _LOCATION = re.compile(r"^(?P<file>.+?)(?::(?P<line>\d+))?(?::(?P<column>\d+))?$")
 
 # Sections of a report that describe context rather than a conflicting access.
@@ -252,17 +261,38 @@ _NEEDS_CRITICAL_SECTION = {
 }
 
 
-def _harness_rewrite(report: Report) -> bool:
+def _rewrites_contents(section: Section, extension_modules: set[str]) -> bool:
+    """This stack only rewrites a buffer's contents in place.
+
+    Either a CPython routine that does nothing else (`_CONTENT_WRITERS`), or a
+    copy primitive at the top called from a library outside the interpreter —
+    numpy refilling an array with `memmove`. CPython's own containers are left
+    out of the second case: a `memmove` inside `list.insert` runs under the
+    list's critical section, which an extension reading the list must take
+    too. A frame of yours, or any free, realloc or resize on the stack, and it
+    is not a rewrite: memory the extension reads may be gone.
+    """
+    frames = section.frames
+    if any(f.module in extension_modules or _RELEASES.search(f.symbol) for f in frames):
+        return False
+    first = _first_real(section)
+    if first is None:
+        return False
+    if first.symbol.startswith(_CONTENT_WRITERS):
+        return True
+    copies = bool(frames) and _is_interceptor(frames[0]) and frames[0].symbol in _COPY_PRIMITIVES
+    return copies and not _INTERPRETER_LIBRARY.match(first.module or "")
+
+
+def _harness_rewrite(report: Report, extension_modules: set[str]) -> bool:
     """A mutator thread only rewriting buffer contents in place."""
     names = report.thread_names()
     for section in report.access_stacks:
         tid = report.access_thread(section)
-        if not names.get(tid or "", "").startswith(_MUTATOR_PREFIX):
-            continue
-        for frame in section.frames:
-            if _is_interceptor(frame):
-                continue
-            return frame.symbol.startswith(_CONTENT_WRITERS)
+        if names.get(tid or "", "").startswith(_MUTATOR_PREFIX) and _rewrites_contents(
+            section, extension_modules
+        ):
+            return True
     return False
 
 
@@ -285,7 +315,7 @@ def attribute(report: Report, extension_modules: set[str]) -> str:
     anywhere = any(f.module in extension_modules for s in stacks for f in s.frames)
     if report.is_crash:
         return YOURS if anywhere or not stacks else EXTERNAL
-    if anywhere and _harness_rewrite(report):
+    if anywhere and _harness_rewrite(report, extension_modules):
         return HARNESS
     tops = [_first_real(stack) for stack in stacks]
     if anywhere and any(t is not None and t.symbol.startswith(_ALLOCATORS) for t in tops):
@@ -320,12 +350,63 @@ def _rule(kind: str) -> str:
 
 
 def _relative(path: str, root: str) -> str | None:
-    """`path` relative to `root`, or None when it lies outside it."""
+    """`path` relative to `root`, or None when it lies outside it.
+
+    Only an absolute path can be in the crate. A bare file name comes from an
+    uninstrumented library's debug info (`lowlevel_strided_loops.c`); resolved
+    against the working directory, which is the crate root in the image, it
+    would pass for a crate file.
+    """
+    if not os.path.isabs(path):
+        return None
     try:
         rel = os.path.relpath(os.path.realpath(path), os.path.realpath(root))
     except ValueError:
         return None
     return None if rel == os.pardir or rel.startswith(os.pardir + os.sep) else rel
+
+
+def _is_atomic(frame: Frame) -> bool:
+    """CPython's atomic helpers, inlined from `pyatomic*.h`."""
+    return frame.symbol.startswith("_Py_atomic_") or bool(
+        frame.file and os.path.basename(frame.file).startswith("pyatomic")
+    )
+
+
+def _pyo3_notes(report: Report) -> list[str]:
+    """A sentence per access that happened inside PyO3's own source.
+
+    The race stays where it was attributed, but the code that raced is PyO3's,
+    and PyO3 changes what it makes atomic between releases.
+    """
+    notes: dict[str, None] = {}
+    for section in report.access_stacks:
+        top = _first_real(section)
+        m = _PYO3_SOURCE.search(top.file) if top is not None and top.file else None
+        if m:
+            where = m.group("rest") + (f":{top.line}" if top.line else "")
+            notes.setdefault(
+                f" The access in `{top.symbol}` is inside {m.group('crate')} {m.group('version')} "
+                f"(`{where}`); a newer PyO3 may change it.",
+                None,
+            )
+    return list(notes)
+
+
+def _thread_label(report: Report, section: Section, names: dict[str, str]) -> str | None:
+    """The accessing thread's name when TSan printed one, else its id (`T5`)."""
+    tid = report.access_thread(section)
+    return names.get(tid, tid) if tid else None
+
+
+def _named_header(report: Report, section: Section, names: dict[str, str]) -> str:
+    """The access header without its address, the thread's name after its id —
+    `by thread T5 (ftm-refill)` says a mutator did it; `T5` alone needs the log."""
+    header = _ADDRESS.sub("", section.header)
+    tid = report.access_thread(section)
+    if tid and tid in names:
+        header = header.replace(f"by thread {tid}", f"by thread {tid} ({names[tid]})", 1)
+    return header
 
 
 def _frames_from_top(section: Section) -> list[Frame]:
@@ -416,6 +497,7 @@ def to_findings(
 
     for report in reports:
         owner = attribute(report, extension_modules)
+        names = report.thread_names()
         if owner == YOURS:
             # Each side from where it matters: your frame when the access was
             # yours, otherwise where it happened — a Python callback mutating
@@ -423,7 +505,7 @@ def to_findings(
             # the callback.
             stacks = [
                 (
-                    section.header,
+                    section,
                     _user_frames(section, extension_modules, crate_root)
                     if (_first_real(section) or Frame("", None)).module in extension_modules
                     else _frames_from_top(section),
@@ -431,12 +513,17 @@ def to_findings(
                 for section in report.access_stacks
             ]
         else:
-            stacks = [(section.header, _frames_from_top(section)) for section in report.access_stacks]
+            stacks = [(section, _frames_from_top(section)) for section in report.access_stacks]
         stacks.sort(key=lambda s: s[1][0].symbol if s[1] else "")
         if stacks:
             frame, path = _primary(report, extension_modules, crate_root)
-            if owner != YOURS:
-                frame = stacks[0][1][0] if stacks[0][1] else frame
+            # A harness race is placed at the extension's access, like one of
+            # yours: the mutator's side is the harness's own code.
+            if owner not in (YOURS, HARNESS):
+                # The plain access is the racy one; an atomic on the other
+                # side (`_Py_atomic_load_ptr`) is only where TSan noticed it.
+                firsts = [s[1][0] for s in stacks if s[1]]
+                frame = next((t for t in firsts if not _is_atomic(t)), firsts[0] if firsts else frame)
                 path = (frame.file and (_relative(frame.file, crate_root) or frame.file)) or (
                     frame.module or "<unknown>"
                 )
@@ -454,10 +541,11 @@ def to_findings(
         # Addresses differ on every run; a message that changes when nothing
         # else has is a message nobody can diff.
         described = "; ".join(
-            f"{_ADDRESS.sub('', header)} in `{frames[0].symbol}`".lstrip()
-            for header, frames in stacks
+            f"{_named_header(report, section, names)} in `{frames[0].symbol}`".lstrip()
+            for section, frames in stacks
             if frames
         )
+        described += "".join(_pyo3_notes(report))
         if report.is_crash and not stacks:
             described = (
                 "The process crashed and TSan captured no stack. It died while your "
@@ -482,8 +570,11 @@ def to_findings(
                 "column": max(frame.column or 1, 1),
             },
             "stacks": [
-                {"frames": [_frame_json(f, crate_root) for f in frames]}
-                for _, frames in stacks
+                {
+                    "frames": [_frame_json(f, crate_root) for f in frames],
+                    "thread": _thread_label(report, section, names),
+                }
+                for section, frames in stacks
             ],
             "justification": None,
             "occurrences": 1,

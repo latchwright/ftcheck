@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A mutator refilling another library's buffer is a harness race.** A mutator writing
+  into a numpy array (`arr[:] = ...`) reaches the memory through numpy's copy loop, not
+  CPython's, and was filed as the extension's `certain` race, failing the run. A copy
+  primitive called from a library outside the interpreter, with no frame of the extension
+  and no free, realloc or resize on the mutator's stack, is now a harness race. Harness
+  races are located at the extension's access.
+- **A bare source file name is never a file in the crate.** An uninstrumented library's
+  debug info can name a file with no directory; resolved against the working directory
+  (the crate root, in the image) it became a finding's primary location and merge key.
+- **Races outside the extension are located at the plain access**, not at an atomic
+  helper from CPython's `pyatomic*.h` on the other side.
+
+### Changed
+
+- Race messages name the threads (`by thread T5 (ftm-refill)`), the text summary labels
+  each stack with its thread, and JSON stacks carry a `thread` field.
+- A race whose access is in PyO3's own source says so, with the PyO3 version and line.
+
 ## 0.1.0 — 2026-09-25
 
 First release.
