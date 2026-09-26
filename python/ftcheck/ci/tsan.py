@@ -86,6 +86,8 @@ _MODULE = re.compile(r"\((?P<module>[^()\s]+)\+0x[0-9a-f]+\)\s*$")
 _BUILD_ID = re.compile(r"\s*\(BuildId: [0-9a-f]+\)\s*$")
 _ADDRESS = re.compile(r" at 0x[0-9a-f]+")
 _CODEGEN_UNIT = re.compile(r"^[^/]*-cgu\.\d+$")
+# A source file of PyO3 itself, as Cargo unpacks it: `.../pyo3-ffi-0.26.0/src/...`.
+_PYO3_SOURCE = re.compile(r"/(?P<crate>pyo3(?:-ffi)?)-(?P<version>\d+\.\d+\.\d+[^/]*)/(?P<rest>.+)$")
 _LOCATION = re.compile(r"^(?P<file>.+?)(?::(?P<line>\d+))?(?::(?P<column>\d+))?$")
 
 # Sections of a report that describe context rather than a conflicting access.
@@ -371,6 +373,26 @@ def _is_atomic(frame: Frame) -> bool:
     )
 
 
+def _pyo3_notes(report: Report) -> list[str]:
+    """A sentence per access that happened inside PyO3's own source.
+
+    The race stays where it was attributed, but the code that raced is PyO3's,
+    and PyO3 changes what it makes atomic between releases.
+    """
+    notes: dict[str, None] = {}
+    for section in report.access_stacks:
+        top = _first_real(section)
+        m = _PYO3_SOURCE.search(top.file) if top is not None and top.file else None
+        if m:
+            where = m.group("rest") + (f":{top.line}" if top.line else "")
+            notes.setdefault(
+                f" The access in `{top.symbol}` is inside {m.group('crate')} {m.group('version')} "
+                f"(`{where}`); a newer PyO3 may change it.",
+                None,
+            )
+    return list(notes)
+
+
 def _frames_from_top(section: Section) -> list[Frame]:
     """The stack from its first non-interceptor frame: where the access happened."""
     frames = section.frames
@@ -506,6 +528,7 @@ def to_findings(
             for header, frames in stacks
             if frames
         )
+        described += "".join(_pyo3_notes(report))
         if report.is_crash and not stacks:
             described = (
                 "The process crashed and TSan captured no stack. It died while your "

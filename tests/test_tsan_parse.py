@@ -447,3 +447,28 @@ def test_an_atomic_frame_in_a_pyatomic_header_is_skipped_too():
     )
     _, _, (finding,) = to_findings([report], EXAMPLE, CRATE)
     assert finding["symbol"] == "list_append"
+
+
+def test_an_access_inside_pyo3_says_so():
+    """The race is still yours and still located in your code, but the access
+    itself is PyO3's, which a newer PyO3 may have changed."""
+    report = _race(
+        [f"PyList_GET_SIZE {PYO3_FFI}/src/cpython/listobject.rs:22:5 {EXT}",
+         f"count /tmp/c/src/lib.rs:30:9 {EXT}"],
+        [f"list_append /cpython/Objects/listobject.c:520:5 {PY}"],
+    )
+    assert attribute(report, EXAMPLE) == YOURS
+    (finding,), _, _ = to_findings([report], EXAMPLE, CRATE)
+    assert finding["primary"]["file"] == "src/lib.rs"
+    assert "inside pyo3-ffi 0.26.0 (`src/cpython/listobject.rs:22`)" in finding["message"]
+    assert "a newer PyO3 may change it" in finding["message"]
+
+
+def test_pyo3_further_down_the_stack_is_not_mentioned():
+    report = _race(
+        [f"count /tmp/c/src/lib.rs:30:9 {EXT}",
+         f"{{closure#0}} /opt/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-0.27.2/src/impl_/trampoline.rs:44:37 {EXT}"],
+        [f"list_append /cpython/Objects/listobject.c:520:5 {PY}"],
+    )
+    (finding,), _, _ = to_findings([report], EXAMPLE, CRATE)
+    assert "PyO3" not in finding["message"]
