@@ -82,9 +82,11 @@ be passed this way.
 **A session that aborts** part-way — a pytest `INTERNALERROR` — exits `3`, not `4`: the
 suite did not run, so nothing can be said about it. pytest's own summary line is printed.
 
-**Stripped builds.** If the extension is stripped (`strip = true` under `[tool.maturin]` or
-in the release profile), every frame of yours in a report is nameless; ftcheck warns. Set
-`strip = false` for ftcheck runs.
+**Stripped builds.** A stripped extension makes every frame of yours in a report
+nameless, so the build overrides both places a project can ask for it: the release
+profile (`CARGO_PROFILE_RELEASE_STRIP=false`) and `strip = true` under `[tool.maturin]`
+(`MATURIN_STRIP=false`, which needs maturin 1.12 or later; the image carries a newer one).
+If the extension is stripped anyway, ftcheck warns.
 
 **setuptools-rust projects** are not built as they stand — ftcheck builds with maturin and
 says so. A `[tool.maturin]` section naming the module and any Cargo features is enough.

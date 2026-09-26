@@ -257,7 +257,8 @@ def _stripped(path: pathlib.Path) -> bool:
     sections = subprocess.run(
         [readelf, "-S", str(path)], capture_output=True, text=True, check=False
     ).stdout
-    return ".symtab" not in sections
+    # No section headers at all means readelf could not read it: not stripped.
+    return "Section Headers" in sections and ".symtab" not in sections
 
 
 def _count_tests(junit: pathlib.Path) -> tuple[int, int, int]:
@@ -320,6 +321,10 @@ def prepare(
         # A project's `strip = true` would erase every frame name from the
         # reports (seen on two public projects).
         "CARGO_PROFILE_RELEASE_STRIP": "false",
+        # ...and so would `strip = true` under [tool.maturin], which maturin
+        # applies itself; since 1.12 this variable overrides pyproject.toml.
+        # An older maturin ignores it, and the stripped-library warning remains.
+        "MATURIN_STRIP": "false",
         # C and C++ built by build scripts (the `cc` crate honours these) must be
         # instrumented too, and by the clang that built the interpreter: gcc's
         # libtsan is a different runtime from the one already loaded.

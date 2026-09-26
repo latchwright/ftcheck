@@ -19,6 +19,8 @@
   pytest's `testpaths` (then `tests/`, then the project root), and the summary says which
   was chosen. Test requirements come from a `requirements.txt` beside the selected tests:
   `--tests other` no longer installs `tests/requirements.txt`.
+- **`strip = true` under `[tool.maturin]` is overridden**, not only warned about: the
+  instrumented build sets `MATURIN_STRIP=false` (maturin 1.12 or later).
 
 ### Changed
 

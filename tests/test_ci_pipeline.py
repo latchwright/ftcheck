@@ -1,7 +1,11 @@
 # SPDX-License-Identifier: MIT OR Apache-2.0
 """The ci pipeline's inputs: which tests run, what is installed, what is kept."""
 import pathlib
+import shutil
+import subprocess
 
+import pytest
+from ftcheck.ci import pipeline
 from ftcheck.ci.pipeline import Options, _declared_test_dependencies, _select_tests
 
 
@@ -60,3 +64,50 @@ def test_requirements_come_from_beside_the_selected_tests(tmp_path):
         ["-r", "tests/requirements.txt"],
     )
 
+
+
+class Recorder:
+    """Stands in for `_stream`: records each command and its environment."""
+
+    def __init__(self, fail_on: str = "maturin"):
+        self.calls: list[tuple[list[str], dict]] = []
+        self.fail_on = fail_on
+
+    def __call__(self, cmd, log_path, **kwargs):
+        self.calls.append((cmd, kwargs.get("env") or {}))
+        return 1 if self.fail_on in cmd[0] else 0
+
+
+def environment():
+    from ftcheck.ci.environment import Environment
+
+    return Environment(python="python3", toolchain="nightly", interpreter={"executable": "python3"})
+
+
+def test_the_build_overrides_a_project_strip_setting(tmp_path, monkeypatch):
+    """`strip = true` under [tool.maturin] erased every frame name; maturin
+    >= 1.12 lets MATURIN_STRIP override pyproject.toml."""
+    recorder = Recorder()
+    monkeypatch.setattr(pipeline, "_stream", recorder)
+    out = pipeline.Outcome()
+    assert pipeline.prepare(environment(), opts(tmp_path), out) is None
+    (build_cmd, build_env), = recorder.calls
+    assert build_cmd[:2] == ["maturin", "build"]
+    assert build_env["MATURIN_STRIP"] == "false"
+    assert build_env["CARGO_PROFILE_RELEASE_STRIP"] == "false"
+
+
+@pytest.mark.skipif(not (shutil.which("readelf") and shutil.which("objcopy")), reason="binutils")
+def test_a_stripped_library_is_recognised(tmp_path):
+    import ftcheck._ftcheck as ext
+
+    unstripped = tmp_path / "unstripped.so"
+    shutil.copy(ext.__file__, unstripped)
+    if pipeline._stripped(unstripped):
+        pytest.skip("the installed extension is itself stripped")
+    stripped = tmp_path / "stripped.so"
+    subprocess.run(["objcopy", "--strip-all", str(unstripped), str(stripped)], check=True)
+    assert pipeline._stripped(stripped)
+    not_elf = tmp_path / "not-elf.so"
+    not_elf.write_text("not a shared library\n")
+    assert not pipeline._stripped(not_elf), "unreadable is not the same as stripped"
