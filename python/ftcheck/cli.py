@@ -71,7 +71,8 @@ def build_parser() -> _Parser:
         action="append",
         default=[],
         metavar="PATH",
-        help="test paths, relative to the project (default: tests/ if present)",
+        help="test paths, relative to the project (default: pytest's testpaths, else tests/ "
+        "if present, else the project root)",
     )
     ci_parser.add_argument(
         "--extra", action="append", default=[], help="install the project with this extra"

@@ -39,13 +39,19 @@ $ docker run --rm --security-opt seccomp=unconfined \
    C and C++ compiled by build scripts get `-fsanitize=thread` through `CFLAGS`/`CXXFLAGS`,
    compiled by **the same clang that built the interpreter**. Line tables are on, so every
    Rust frame has a file and line.
+   A build script that imports Python packages gets them: `[build-system].requires`
+   (less maturin, which the image provides) is installed into a separate build venv on
+   the TSan interpreter, first on `PATH` for the build.
 3. **Isolated install.** A venv on the TSan interpreter, with the wheel, `pytest` and
    `pytest-run-parallel`.
 4. **The suite, concurrently.** `pytest --parallel-threads=N` (default 8) runs each test
    body in N threads simultaneously. A module-level instance your tests touch is therefore
    **shared across threads** — which is the situation the GIL used to make safe.
    `PYTHON_GIL=0` is forced, so an extension that does not declare `gil_used = false`
-   cannot quietly turn the GIL back on and hide every race.
+   cannot quietly turn the GIL back on and hide every race. Because users' interpreters do not
+   force it, each extension module is first imported once without `PYTHON_GIL`; if that
+   turns the GIL back on, a note says so (in `stress` too): the results then describe the
+   module only with the GIL forced off.
 5. **Collect.** TSan logs are parsed, each report is attributed, and repeats of the same
    race — from either side of the pair, from any threads — collapse into one finding.
 6. **Report.** Terminal summary, `--format json`, `--sarif`, `--junit`. The lint and the
@@ -57,9 +63,15 @@ $ docker run --rm --security-opt seccomp=unconfined \
 **Test dependencies** are installed automatically when the project declares them: a
 [PEP 735](https://peps.python.org/pep-0735/) dependency group named `test`, `tests` or
 `testing`; else an optional-dependencies extra of those names (installed on the
-instrumented wheel, never from source); else a `requirements` file such as
-`tests/requirements.txt`, `requirements-test.txt` or `requirements-dev.txt`; else a `dev`
-group. Add anything else with `--with PACKAGE`; turn this off with `--no-test-deps`.
+instrumented wheel, never from source); else a `requirements.txt` beside the tests being
+run (`tests/requirements.txt` by default, `other/requirements.txt` with `--tests other`);
+else a root `requirements` file such as `requirements-test.txt` or `requirements-dev.txt`;
+else a `dev` group. The summary names the source used. Add anything else with
+`--with PACKAGE`; turn this off with `--no-test-deps`.
+
+**Which tests run.** `--tests` when given; else pytest's own `testpaths` (from
+`pytest.ini`, `pyproject.toml`, `tox.ini` or `setup.cfg`, globs expanded); else `tests/`;
+else the project root. The summary says which, and why.
 
 **Tests that are not thread-safe** — using `mocker`, `capsys`, signal handlers, a fixed
 port, a shared temporary file — fail when every test body runs in N threads, and the run
@@ -73,12 +85,16 @@ def test_uses_a_signal_handler(): ...
 or deselect them: `--pytest-arg=-k --pytest-arg="not network"`. Any pytest argument can
 be passed this way.
 
-**A session that aborts** part-way — a pytest `INTERNALERROR` — exits `3`, not `4`: the
-suite did not run, so nothing can be said about it. pytest's own summary line is printed.
+**A session that aborts** part-way exits `3`, not `4`: the suite did not run, so nothing
+can be said about it. That is a pytest `INTERNALERROR`, or a session that ran fewer tests
+than it collected without saying why (`-x` and `--maxfail` say why, and are a failing
+suite). pytest's own summary line is printed.
 
-**Stripped builds.** If the extension is stripped (`strip = true` under `[tool.maturin]` or
-in the release profile), every frame of yours in a report is nameless; ftcheck warns. Set
-`strip = false` for ftcheck runs.
+**Stripped builds.** A stripped extension makes every frame of yours in a report
+nameless, so the build overrides both places a project can ask for it: the release
+profile (`CARGO_PROFILE_RELEASE_STRIP=false`) and `strip = true` under `[tool.maturin]`
+(`MATURIN_STRIP=false`, which needs maturin 1.12 or later; the image carries a newer one).
+If the extension is stripped anyway, ftcheck warns.
 
 **setuptools-rust projects** are not built as they stand — ftcheck builds with maturin and
 says so. A `[tool.maturin]` section naming the module and any Cargo features is enough.
@@ -91,13 +107,17 @@ project root cannot shadow the instrumented wheel — common in maturin mixed la
 `target/ftcheck-stress`), so each builds once; mount a crate cache as in the README's quick
 start, or every run downloads your dependencies again.
 
+**Raw logs.** Each run's ThreadSanitizer logs go to a directory of their own under the
+work directory, `tsan-runs/<UTC time>/` (`-seed<N>` appended for `stress`), named in the
+summary. The last five runs are kept, so back-to-back seeds do not overwrite each other.
+
 ## Options
 
 | Option | Default | |
 |---|---|---|
 | `PATH` | `.` | Project root, or the crate directory when it is not at the root |
 | `--threads N` | 8 | Threads per test body |
-| `--tests PATH` | `tests/` if present, else `.` | Test paths, relative to the project; repeatable |
+| `--tests PATH` | `testpaths`, else `tests/`, else `.` | Test paths, relative to the project; repeatable |
 | `--pytest-arg ARG` | — | One argument passed to pytest; repeatable |
 | `--with PACKAGE` / `--extra NAME` | — | Extra packages in the venv / install the wheel with an extra |
 | `--no-test-deps` | — | Do not install declared test dependencies |

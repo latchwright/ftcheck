@@ -89,7 +89,7 @@ def _log(message: str) -> None:
 
 def run(env: Environment, opts: Options, sopts: StressOptions, config: dict) -> StressOutcome:
     out = StressOutcome()
-    prepared = prepare(env, opts, out, install_runner=False)
+    prepared = prepare(env, opts, out, install_runner=False, run_label=f"seed{sopts.seed}")
     if prepared is None:
         return out
 
