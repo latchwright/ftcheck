@@ -1,9 +1,16 @@
 # ftcheck's default ThreadSanitizer suppressions for Rust dependencies.
 #
-# Every entry is justified by the dependency's own documentation, and is as
-# narrow as TSan allows: `race_top:` matches only the frame where the access
-# happened, so a real race in your code that merely runs inside the
-# dependency (a closure executed by a rayon job, say) is still reported.
+# Every entry is justified by the dependency's own source, and is as narrow as
+# TSan allows. `race_top:` matches only the frame where the access happened, so
+# a real race in your code that merely runs inside the dependency (a closure
+# executed by a rayon job, say) is still reported. It is the default.
+#
+# `race:` matches any frame of either access, and is used only where the access
+# TSan reports is an interceptor (`free`, `__tsan_memcpy`) that `race_top:`
+# cannot name narrowly. Each such entry names a function that runs none of the
+# caller's code, so no frame of yours can sit above it: a message's `Drop`, a
+# deferred closure and a thread-local destructor all run in other frames, and
+# races in them are still reported (see fixtures/racy/race-in-dependency-callbacks).
 
 # crossbeam-deque's Chase-Lev buffer, as used by rayon's job queue.
 # crossbeam-deque 0.8 src/deque.rs, Buffer::write / Buffer::read:
@@ -14,3 +21,42 @@
 # dependency's own documented race, not the calling project's code.
 race_top:write_volatile<core::mem::maybe_uninit::MaybeUninit<rayon_core::job::JobRef>>
 race_top:read_volatile<core::mem::maybe_uninit::MaybeUninit<rayon_core::job::JobRef>>
+
+# oneshot 0.1: the message handover. Sender::send writes the message, then sets
+# the state with Release; the receiver loads the state Relaxed and then issues a
+# standalone fence (src/lib.rs, Receiver::try_recv / recv):
+#   "We need to establish a happens-before relationship with the sender's write
+#    of the MESSAGE state [...] This is a separate fence instead of part of the
+#    load above"
+# TSan does not model standalone fences, so the sender's write of the message
+# looks unordered with the receiver's read of it and its free of the channel.
+# Channel::write_message is `ptr::write` of the message into the slot; the Box
+# drop of a Channel frees the allocation (its fields are MaybeUninit and atomics,
+# so it drops no message and runs no user code).
+race:oneshot::*::write_message::
+race:drop<oneshot::Channel<
+
+# crossbeam-epoch 0.9 (0.9.18 and older): epoch-based reclamation. Garbage is
+# freed once every pinned thread has moved past its epoch, which try_advance and
+# pin prove with `atomic::fence(SeqCst)` (src/internal.rs). TSan does not model
+# the fences, so the collector freeing a queue node of sealed garbage looks
+# unordered with another collector's read of it (Queue::pop_if_internal,
+# `n.data.assume_init_read()`), and freeing a finished thread's Local looks
+# unordered with try_advance walking the list of Locals. Later releases improve
+# TSan compatibility (0.9.19 and 0.9.21 in their changelogs; 0.9.21's try_advance
+# takes orderings TSan can see under `crossbeam_sanitize_thread`, which ftcheck
+# sets), but projects locking 0.9.18 still get these reports. The reads are of crossbeam's own SealedBag; the free is the Box
+# deallocation of a Local, after its contents were dropped in other frames.
+race_top:read<crossbeam_epoch::internal::SealedBag>
+race:drop<crossbeam_epoch::internal::Local, alloc::alloc::Global>
+
+# glibc thread teardown: when a finished thread is detached (its JoinHandle
+# dropped), glibc frees the thread's TLS block in `_dl_deallocate_tls`, on the
+# detaching thread. The thread's exit is handed over inside glibc, which is not
+# instrumented, and detaching is not a synchronisation TSan knows of, so the free
+# looks unordered with every access the finished thread made to its own
+# thread-locals: in its body, in TLS destructors, in std's destructor list.
+# The frame is glibc's deallocation of a finished thread's TLS; it runs no user
+# code. It would also hide another thread using a leaked pointer to that TLS
+# after the thread ended, which safe Rust cannot express.
+race:_dl_deallocate_tls
