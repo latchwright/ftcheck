@@ -248,6 +248,29 @@ def _build_backend(project: pathlib.Path) -> str | None:
     return None
 
 
+def _build_requirements(project: pathlib.Path) -> list[str]:
+    """`[build-system].requires`, less maturin itself.
+
+    A build script can import Python packages (cffi and setuptools, on a
+    public project), and nothing installed them. maturin is left out: the
+    image's own binary builds, and a pip-installed one would shadow it.
+    """
+    import tomllib
+
+    try:
+        data = tomllib.loads((project / "pyproject.toml").read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return []
+    requires = data.get("build-system", {}).get("requires", [])
+    kept = []
+    for req in requires:
+        name = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", req)
+        if name and re.sub(r"[-_.]+", "-", name.group(1)).lower() == "maturin":
+            continue
+        kept.append(req)
+    return kept
+
+
 def _stripped(path: pathlib.Path) -> bool:
     import shutil
 
@@ -273,6 +296,15 @@ def _count_tests(junit: pathlib.Path) -> tuple[int, int, int]:
     failed = sum(int(s.get("failures", 0)) for s in suites)
     errors = sum(int(s.get("errors", 0)) for s in suites)
     return tests - skipped, failed, errors
+
+
+def _make_venv(env: Environment, venv: pathlib.Path, log: pathlib.Path, setup_env: dict) -> bool:
+    """A venv on the TSan interpreter, unless one is already there."""
+    if (venv / "bin" / "python").exists():
+        return True
+    _log(f"creating {venv.name}")
+    cmd = [env.interpreter["executable"], "-m", "venv", str(venv)]
+    return _stream(cmd, log, env=setup_env) == 0
 
 
 @dataclass
@@ -331,6 +363,35 @@ def prepare(
         "CFLAGS": (os.environ.get("CFLAGS", "") + " -fsanitize=thread -g").strip(),
         "CXXFLAGS": (os.environ.get("CXXFLAGS", "") + " -fsanitize=thread -g").strip(),
     }
+    # Setup runs under TSan too — it is the same interpreter — but its reports
+    # are CPython's and pip's, not the project's, so they go to a separate log.
+    setup_env = {
+        **os.environ,
+        "TSAN_OPTIONS": _tsan_options(env, work / "setup-tsan", opts.suppressions),
+    }
+    build_requires = _build_requirements(opts.project)
+    if build_requires:
+        # A venv of their own, on PATH for the build: the test venv then holds
+        # only what the project declares for its tests.
+        build_venv = work / "build-venv"
+        deps_log = work / "build-deps.log"
+        _log(f"installing the build requirements ({', '.join(build_requires)})")
+        if not _make_venv(env, build_venv, deps_log, setup_env):
+            out.error = "could not create a venv for the build requirements"
+            out.log = _tail(deps_log)
+            return None
+        cmd = [
+            str(build_venv / "bin" / "python"), "-m", "pip", "install", "--quiet",
+            "--disable-pip-version-check", *build_requires,
+        ]  # fmt: skip
+        if _stream(cmd, deps_log, env=setup_env) != 0:
+            out.error = "could not install the project's [build-system].requires"
+            out.log = _tail(deps_log)
+            out.log_path = str(deps_log)
+            return None
+        build_env["PATH"] = os.pathsep.join(
+            [str(build_venv / "bin"), os.environ.get("PATH", os.defpath)]
+        )
     if env.cc:
         build_env["CC"] = env.cc
     if env.cxx:
@@ -380,21 +441,12 @@ def prepare(
         previous.mkdir(exist_ok=True)
         for f in old_logs:
             f.rename(previous / f.name)
-    # Setup runs under TSan too — it is the same interpreter — but its reports
-    # are CPython's and pip's, not the project's, so they go to a separate log.
-    setup_env = {
-        **os.environ,
-        "TSAN_OPTIONS": _tsan_options(env, work / "setup-tsan", opts.suppressions),
-    }
     install_log = work / "install.log"
     python = str(venv / "bin" / "python")
-    if not pathlib.Path(python).exists():
-        _log("creating venv")
-        cmd = [env.interpreter["executable"], "-m", "venv", str(venv)]
-        if _stream(cmd, install_log, env=setup_env) != 0:
-            out.error = "could not create a venv on the TSan interpreter"
-            out.log = _tail(install_log)
-            return None
+    if not _make_venv(env, venv, install_log, setup_env):
+        out.error = "could not create a venv on the TSan interpreter"
+        out.log = _tail(install_log)
+        return None
     spec = str(wheel) + (f"[{','.join(opts.extras)}]" if opts.extras else "")
     _log(f"installing {wheel.name} and the test runner")
     cmd = [

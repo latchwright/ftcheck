@@ -21,6 +21,8 @@
   `--tests other` no longer installs `tests/requirements.txt`.
 - **`strip = true` under `[tool.maturin]` is overridden**, not only warned about: the
   instrumented build sets `MATURIN_STRIP=false` (maturin 1.12 or later).
+- **Build scripts that import Python packages build.** `[build-system].requires`, less
+  maturin, is installed into a build venv that is first on `PATH` for the build.
 
 ### Changed
 

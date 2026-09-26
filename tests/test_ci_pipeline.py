@@ -111,3 +111,38 @@ def test_a_stripped_library_is_recognised(tmp_path):
     not_elf = tmp_path / "not-elf.so"
     not_elf.write_text("not a shared library\n")
     assert not pipeline._stripped(not_elf), "unreadable is not the same as stripped"
+
+
+def test_build_requirements_are_installed_for_build_scripts(tmp_path, monkeypatch):
+    """Regression: a build script needing Python packages (cffi, setuptools)
+    failed, because [build-system].requires was never installed."""
+    (tmp_path / "pyproject.toml").write_text(
+        '[build-system]\nrequires = ["maturin>=1.5,<2", "cffi>=1.0", "setuptools"]\n'
+        'build-backend = "maturin"\n'
+    )
+    recorder = Recorder()
+    monkeypatch.setattr(pipeline, "_stream", recorder)
+    assert pipeline.prepare(environment(), opts(tmp_path), pipeline.Outcome()) is None
+    (venv_cmd, _), (pip_cmd, _), (build_cmd, build_env) = recorder.calls
+    build_venv = tmp_path / "work" / "build-venv"
+    assert venv_cmd == ["python3", "-m", "venv", str(build_venv)]
+    assert pip_cmd[0] == str(build_venv / "bin" / "python")
+    assert pip_cmd[-2:] == ["cffi>=1.0", "setuptools"], "maturin is the image's, not pip's"
+    assert build_cmd[0] == "maturin"
+    assert build_env["PATH"].split(":")[0] == str(build_venv / "bin")
+
+
+def test_no_build_requirements_beyond_maturin_means_no_build_venv(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text('[build-system]\nrequires = ["maturin"]\n')
+    recorder = Recorder()
+    monkeypatch.setattr(pipeline, "_stream", recorder)
+    pipeline.prepare(environment(), opts(tmp_path), pipeline.Outcome())
+    assert [cmd[0] for cmd, _ in recorder.calls] == ["maturin"]
+
+
+def test_a_failed_build_requirement_install_names_its_stage(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text('[build-system]\nrequires = ["cffi"]\n')
+    monkeypatch.setattr(pipeline, "_stream", Recorder(fail_on="build-venv"))
+    out = pipeline.Outcome()
+    assert pipeline.prepare(environment(), opts(tmp_path), out) is None
+    assert out.stage == "build" and "[build-system].requires" in out.error

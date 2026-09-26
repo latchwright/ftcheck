@@ -39,6 +39,9 @@ $ docker run --rm --security-opt seccomp=unconfined \
    C and C++ compiled by build scripts get `-fsanitize=thread` through `CFLAGS`/`CXXFLAGS`,
    compiled by **the same clang that built the interpreter**. Line tables are on, so every
    Rust frame has a file and line.
+   A build script that imports Python packages gets them: `[build-system].requires`
+   (less maturin, which the image provides) is installed into a separate build venv on
+   the TSan interpreter, first on `PATH` for the build.
 3. **Isolated install.** A venv on the TSan interpreter, with the wheel, `pytest` and
    `pytest-run-parallel`.
 4. **The suite, concurrently.** `pytest --parallel-threads=N` (default 8) runs each test
