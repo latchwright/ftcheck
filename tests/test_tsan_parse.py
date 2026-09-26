@@ -472,3 +472,36 @@ def test_pyo3_further_down_the_stack_is_not_mentioned():
     )
     (finding,), _, _ = to_findings([report], EXAMPLE, CRATE)
     assert "PyO3" not in finding["message"]
+
+
+def test_messages_name_the_threads():
+    """`thread T5` means nothing without the raw log; `ftm-refill_rows` says a
+    mutator did it."""
+    _, _, other = to_findings(parse(load(MUTATOR_LOG)), EXAMPLE, "/src")
+    assert other
+    for f in other:
+        assert "thread T5 (ftm-refill_rows)" in f["message"]
+        assert {s["thread"] for s in f["stacks"]} <= {"ftm-refill_rows", "ftw-pair-2", "ftw-pair-4"}
+
+
+def test_a_thread_without_a_name_keeps_its_id():
+    report = _race([f"count /tmp/c/src/lib.rs:30:9 {EXT}"], [f"count /tmp/c/src/lib.rs:31:9 {EXT}"])
+    (finding,), _, _ = to_findings([report], EXAMPLE, CRATE)
+    assert "by thread T1 in" in finding["message"]
+    assert sorted(s["thread"] for s in finding["stacks"]) == ["T1", "T2"]
+
+
+def test_the_text_summary_labels_stacks_with_thread_names():
+    import io
+    import types
+
+    from ftcheck.report.text import _render_findings
+
+    report = _race([f"count /tmp/c/src/lib.rs:30:9 {EXT}"], [f"count /tmp/c/src/lib.rs:31:9 {EXT}"],
+                   writer_name="ftw-pair-3")
+    mine, _, _ = to_findings([report], EXAMPLE, CRATE)
+    outcome = types.SimpleNamespace(warnings=[], findings=mine, reached=[], external=[])
+    out = io.StringIO()
+    _render_findings(outcome, out)
+    assert "thread 1 (T1):" in out.getvalue() or "thread 2 (T1):" in out.getvalue()
+    assert "(ftw-pair-3):" in out.getvalue()

@@ -115,6 +115,12 @@ def ci_json(env, outcome, code: int, headline: str, threads: int) -> dict[str, A
     }
 
 
+def _thread(i: int, stack: dict) -> str:
+    """`thread 1 (ftm-refill)`: which thread made the access, when known."""
+    name = stack.get("thread")
+    return f"thread {i} ({name})" if name else f"thread {i}"
+
+
 def _render_findings(outcome, stream: TextIO) -> None:
     """Warnings, findings in the user's extension, then reports outside it."""
     for warning in outcome.warnings:
@@ -139,7 +145,7 @@ def _render_findings(outcome, stream: TextIO) -> None:
             print(_wrap(f["message"], "        "), file=stream)
             for i, stack in enumerate(f["stacks"], 1):
                 frames = stack["frames"][:4]
-                print(f"        thread {i}:", file=stream)
+                print(f"        {_thread(i, stack)}:", file=stream)
                 for fr in frames:
                     print(f"          {fr['symbol']}  {_location(fr['location'])}", file=stream)
             print(file=stream)
@@ -155,7 +161,7 @@ def _render_findings(outcome, stream: TextIO) -> None:
             for i, stack in enumerate(f["stacks"], 1):
                 top = stack["frames"][:2]
                 path = " <- ".join(fr["symbol"] for fr in top)
-                print(f"        thread {i}: {path}", file=stream)
+                print(f"        {_thread(i, stack)}: {path}", file=stream)
 
     if outcome.external:
         print(

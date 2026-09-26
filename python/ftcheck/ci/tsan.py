@@ -393,6 +393,22 @@ def _pyo3_notes(report: Report) -> list[str]:
     return list(notes)
 
 
+def _thread_label(report: Report, section: Section, names: dict[str, str]) -> str | None:
+    """The accessing thread's name when TSan printed one, else its id (`T5`)."""
+    tid = report.access_thread(section)
+    return names.get(tid, tid) if tid else None
+
+
+def _named_header(report: Report, section: Section, names: dict[str, str]) -> str:
+    """The access header without its address, the thread's name after its id —
+    `by thread T5 (ftm-refill)` says a mutator did it; `T5` alone needs the log."""
+    header = _ADDRESS.sub("", section.header)
+    tid = report.access_thread(section)
+    if tid and tid in names:
+        header = header.replace(f"by thread {tid}", f"by thread {tid} ({names[tid]})", 1)
+    return header
+
+
 def _frames_from_top(section: Section) -> list[Frame]:
     """The stack from its first non-interceptor frame: where the access happened."""
     frames = section.frames
@@ -481,6 +497,7 @@ def to_findings(
 
     for report in reports:
         owner = attribute(report, extension_modules)
+        names = report.thread_names()
         if owner == YOURS:
             # Each side from where it matters: your frame when the access was
             # yours, otherwise where it happened — a Python callback mutating
@@ -488,7 +505,7 @@ def to_findings(
             # the callback.
             stacks = [
                 (
-                    section.header,
+                    section,
                     _user_frames(section, extension_modules, crate_root)
                     if (_first_real(section) or Frame("", None)).module in extension_modules
                     else _frames_from_top(section),
@@ -496,7 +513,7 @@ def to_findings(
                 for section in report.access_stacks
             ]
         else:
-            stacks = [(section.header, _frames_from_top(section)) for section in report.access_stacks]
+            stacks = [(section, _frames_from_top(section)) for section in report.access_stacks]
         stacks.sort(key=lambda s: s[1][0].symbol if s[1] else "")
         if stacks:
             frame, path = _primary(report, extension_modules, crate_root)
@@ -524,8 +541,8 @@ def to_findings(
         # Addresses differ on every run; a message that changes when nothing
         # else has is a message nobody can diff.
         described = "; ".join(
-            f"{_ADDRESS.sub('', header)} in `{frames[0].symbol}`".lstrip()
-            for header, frames in stacks
+            f"{_named_header(report, section, names)} in `{frames[0].symbol}`".lstrip()
+            for section, frames in stacks
             if frames
         )
         described += "".join(_pyo3_notes(report))
@@ -553,8 +570,11 @@ def to_findings(
                 "column": max(frame.column or 1, 1),
             },
             "stacks": [
-                {"frames": [_frame_json(f, crate_root) for f in frames]}
-                for _, frames in stacks
+                {
+                    "frames": [_frame_json(f, crate_root) for f in frames],
+                    "thread": _thread_label(report, section, names),
+                }
+                for section, frames in stacks
             ],
             "justification": None,
             "occurrences": 1,
