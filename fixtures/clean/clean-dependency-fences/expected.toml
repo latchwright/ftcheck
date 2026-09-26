@@ -1,0 +1,3 @@
+race = false
+rules = []
+justification = "Values handed over by oneshot, memory reclaimed by crossbeam-epoch 0.9.18, and short-lived threads detached after they finish using a thread-local with a destructor, all called from many Python threads, each call on its own data. Every access is ordered, by fences TSan does not model (oneshot, crossbeam-epoch) or inside uninstrumented glibc (the finished thread's TLS block freed in _dl_deallocate_tls). Without ftcheck's default suppressions TSan reports all three; this fixture pins that the suppressions hold."

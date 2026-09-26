@@ -1,0 +1,5 @@
+# Small counts: every call spawns threads, and the stress budget is shared.
+[stress.args]
+"clean_dependency_fences.oneshot_roundtrip" = ["4", "16"]
+"clean_dependency_fences.epoch_churn" = ["2", "4"]
+"clean_dependency_fences.short_lived_threads" = ["2", "8"]

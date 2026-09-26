@@ -1,0 +1,17 @@
+[package]
+name = "clean-dependency-fences"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "clean_dependency_fences"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.29", features = ["extension-module"] }
+oneshot = "0.1"
+# Pinned to the last release before crossbeam-epoch modelled its fences for
+# ThreadSanitizer (0.9.19 and 0.9.21 did, under `crossbeam_sanitize_thread`).
+# Projects that lock an older release still get these reports.
+crossbeam-epoch = "=0.9.18"
