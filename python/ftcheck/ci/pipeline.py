@@ -345,6 +345,32 @@ def _make_venv(env: Environment, venv: pathlib.Path, log: pathlib.Path, setup_en
     return _stream(cmd, log, env=setup_env) == 0
 
 
+# Raw TSan logs are the evidence behind a finding; a rerun must not erase them.
+_KEEP_TSAN_RUNS = 5
+
+
+def _new_tsan_dir(work: pathlib.Path, label: str = "") -> pathlib.Path:
+    """A fresh `tsan-runs/<UTC time>[-label]/` for this run's raw logs.
+
+    The last five runs are kept: one saved generation was not enough when
+    several seeds ran back to back.
+    """
+    import shutil
+    from datetime import UTC, datetime
+
+    runs = work / "tsan-runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    name = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + (f"-{label}" if label else "")
+    path, n = runs / name, 1
+    while path.exists():
+        n += 1
+        path = runs / f"{name}-{n}"
+    path.mkdir()
+    for old in sorted(d for d in runs.iterdir() if d.is_dir())[:-_KEEP_TSAN_RUNS]:
+        shutil.rmtree(old, ignore_errors=True)
+    return path
+
+
 @dataclass
 class Prepared:
     """An instrumented build installed into a venv, ready to be exercised."""
@@ -355,13 +381,18 @@ class Prepared:
 
 
 def prepare(
-    env: Environment, opts: Options, out: Outcome, install_runner: bool = True
+    env: Environment,
+    opts: Options,
+    out: Outcome,
+    install_runner: bool = True,
+    run_label: str = "",
 ) -> Prepared | None:
     """Stages 1 and 2: instrumented build, isolated install. None on failure.
 
     `install_runner=False` skips pytest and pytest-run-parallel, which only `ci`
     uses: `stress` runs no tests, and every download is one more thing a flaky
-    network can stall.
+    network can stall. `run_label` names this run's TSan log directory
+    (`stress` passes its seed).
     """
     work = opts.work_dir
     work.mkdir(parents=True, exist_ok=True)
@@ -466,19 +497,11 @@ def prepare(
     # --- 2. an isolated venv on the TSan interpreter ---------------------------
     out.stage = "install"
     venv = work / "venv"
-    tsan_dir = work / "tsan"
-    tsan_dir.mkdir(exist_ok=True)
-    # The previous run's raw logs move aside instead of being deleted — a rerun
-    # in the same work directory once erased the only logs of a confirmed race.
-    previous = work / "tsan-previous"
-    old_logs = [f for f in tsan_dir.glob("*") if f.is_file()]
-    if old_logs:
-        if previous.exists():
-            for f in previous.glob("*"):
-                f.unlink()
-        previous.mkdir(exist_ok=True)
-        for f in old_logs:
-            f.rename(previous / f.name)
+    # A directory per run — a rerun in the same work directory once erased the
+    # only logs of a confirmed race.
+    tsan_dir = _new_tsan_dir(work, run_label)
+    _log(f"raw ThreadSanitizer logs go to {tsan_dir}")
+    out.notes.append(f"raw ThreadSanitizer logs: {tsan_dir}")
     install_log = work / "install.log"
     python = str(venv / "bin" / "python")
     if not _make_venv(env, venv, install_log, setup_env):

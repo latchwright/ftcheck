@@ -23,6 +23,9 @@
   instrumented build sets `MATURIN_STRIP=false` (maturin 1.12 or later).
 - **Build scripts that import Python packages build.** `[build-system].requires`, less
   maturin, is installed into a build venv that is first on `PATH` for the build.
+- **Raw TSan logs are kept per run.** Each run writes to `tsan-runs/<UTC time>[-seed<N>]/`
+  under the work directory, named in the summary; the last five are kept (previously one
+  generation, `tsan-previous/`, which back-to-back seeds overwrote).
 
 ### Added
 

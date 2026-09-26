@@ -183,3 +183,17 @@ def test_stress_prints_the_pipeline_notes():
     stream = io.StringIO()
     text.render_stress(env, out, 0, "headline", sopts, 8, stream)
     assert "`pkg._a` does not declare" in stream.getvalue()
+
+
+def test_each_run_keeps_its_own_tsan_logs(tmp_path):
+    """Regression: one generation of raw logs was kept, so back-to-back seeds
+    overwrote the logs of the run before last."""
+    made = [pipeline._new_tsan_dir(tmp_path, f"seed{n}") for n in range(7)]
+    assert len(set(made)) == 7, "runs in the same second still get their own directory"
+    kept = sorted(p.name for p in (tmp_path / "tsan-runs").iterdir())
+    assert len(kept) == pipeline._KEEP_TSAN_RUNS == 5
+    assert made[-1].is_dir() and made[-1].name.endswith("seed6")
+    assert not made[0].exists()
+    assert made[-1].name[:8].isdigit() and "Z" in made[-1].name, "named for the UTC time"
+    same = [pipeline._new_tsan_dir(tmp_path / "ci", "") for _ in range(2)]
+    assert same[0] != same[1] and all(p.is_dir() for p in same)

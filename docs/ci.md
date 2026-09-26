@@ -105,6 +105,10 @@ project root cannot shadow the instrumented wheel — common in maturin mixed la
 `target/ftcheck-stress`), so each builds once; mount a crate cache as in the README's quick
 start, or every run downloads your dependencies again.
 
+**Raw logs.** Each run's ThreadSanitizer logs go to a directory of their own under the
+work directory, `tsan-runs/<UTC time>/` (`-seed<N>` appended for `stress`), named in the
+summary. The last five runs are kept, so back-to-back seeds do not overwrite each other.
+
 ## Options
 
 | Option | Default | |
