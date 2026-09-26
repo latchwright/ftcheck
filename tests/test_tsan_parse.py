@@ -4,6 +4,8 @@
 The logs in tests/data/tsan/ are unedited output of ThreadSanitizer running
 fixtures under ghcr.io/nascheme/cpython-tsan:3.14t with nightly-2026-01-15
 (LLVM 21 on both sides). The paths in them are the container's.
+mutator-numpy-copy.log is the exception: trimmed to two reports, with the
+extension's names and lines invented.
 """
 import pathlib
 
