@@ -137,9 +137,12 @@ a mutator's transient state, so a call that panics on input the mutator made inv
 reported as a panic under concurrency.
 
 A mutator that only **rewrites a buffer's contents** in place (a slice assignment into a
-`bytearray` the extension is reading) races by the buffer protocol's own contract; it is
-reported as a **harness** race — shown, not failing. A mutator whose resize or free makes
-the extension touch freed memory is a finding like any other. Mutator threads are named
+`bytearray` the extension is reading, or a numpy array refilled with `arr[:] = ...`) races
+by the buffer protocol's own contract; it is reported as a **harness** race — shown, not
+failing, and located at the extension's read. A mutator whose resize or free makes
+the extension touch freed memory is a finding like any other, and so is a copy inside
+one of CPython's own containers (`list.insert`): those run under the container's critical
+section, which the extension must take too. Mutator threads are named
 `ftm-<name>` (cut to Linux's 15 characters), so TSan reports say which mutator it was.
 
 ### Skipping

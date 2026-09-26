@@ -66,6 +66,13 @@ _CONTENT_WRITERS = (
     "bytearray_setslice_linear", "bytearray_setslice", "bytearray_ass_subscript",
     "copy_base", "copy_single", "memory_ass_sub", "bytearray_setitem",
 )  # fmt: skip
+# TSan's interceptors for the copy primitives, as the symbolizer names them.
+_COPY_PRIMITIVES = frozenset(
+    p for name in ("memmove", "memcpy", "memset") for p in (name, "__tsan_" + name)
+)
+# A frame that frees, reallocates or resizes: not a rewrite in place.
+_RELEASES = re.compile(r"free|realloc|resize|dealloc", re.IGNORECASE)
+_INTERPRETER_LIBRARY = re.compile(r"^libpython")
 # The other access being an allocation means the memory was freed and reused:
 # the extension touched an object that no longer exists.
 _ALLOCATORS = (
@@ -252,17 +259,38 @@ _NEEDS_CRITICAL_SECTION = {
 }
 
 
-def _harness_rewrite(report: Report) -> bool:
+def _rewrites_contents(section: Section, extension_modules: set[str]) -> bool:
+    """This stack only rewrites a buffer's contents in place.
+
+    Either a CPython routine that does nothing else (`_CONTENT_WRITERS`), or a
+    copy primitive at the top called from a library outside the interpreter —
+    numpy refilling an array with `memmove`. CPython's own containers are left
+    out of the second case: a `memmove` inside `list.insert` runs under the
+    list's critical section, which an extension reading the list must take
+    too. A frame of yours, or any free, realloc or resize on the stack, and it
+    is not a rewrite: memory the extension reads may be gone.
+    """
+    frames = section.frames
+    if any(f.module in extension_modules or _RELEASES.search(f.symbol) for f in frames):
+        return False
+    first = _first_real(section)
+    if first is None:
+        return False
+    if first.symbol.startswith(_CONTENT_WRITERS):
+        return True
+    copies = bool(frames) and _is_interceptor(frames[0]) and frames[0].symbol in _COPY_PRIMITIVES
+    return copies and not _INTERPRETER_LIBRARY.match(first.module or "")
+
+
+def _harness_rewrite(report: Report, extension_modules: set[str]) -> bool:
     """A mutator thread only rewriting buffer contents in place."""
     names = report.thread_names()
     for section in report.access_stacks:
         tid = report.access_thread(section)
-        if not names.get(tid or "", "").startswith(_MUTATOR_PREFIX):
-            continue
-        for frame in section.frames:
-            if _is_interceptor(frame):
-                continue
-            return frame.symbol.startswith(_CONTENT_WRITERS)
+        if names.get(tid or "", "").startswith(_MUTATOR_PREFIX) and _rewrites_contents(
+            section, extension_modules
+        ):
+            return True
     return False
 
 
@@ -285,7 +313,7 @@ def attribute(report: Report, extension_modules: set[str]) -> str:
     anywhere = any(f.module in extension_modules for s in stacks for f in s.frames)
     if report.is_crash:
         return YOURS if anywhere or not stacks else EXTERNAL
-    if anywhere and _harness_rewrite(report):
+    if anywhere and _harness_rewrite(report, extension_modules):
         return HARNESS
     tops = [_first_real(stack) for stack in stacks]
     if anywhere and any(t is not None and t.symbol.startswith(_ALLOCATORS) for t in tops):
@@ -443,7 +471,9 @@ def to_findings(
         stacks.sort(key=lambda s: s[1][0].symbol if s[1] else "")
         if stacks:
             frame, path = _primary(report, extension_modules, crate_root)
-            if owner != YOURS:
+            # A harness race is placed at the extension's access, like one of
+            # yours: the mutator's side is the harness's own code.
+            if owner not in (YOURS, HARNESS):
                 frame = stacks[0][1][0] if stacks[0][1] else frame
                 path = (frame.file and (_relative(frame.file, crate_root) or frame.file)) or (
                     frame.module or "<unknown>"

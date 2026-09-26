@@ -356,3 +356,73 @@ def test_a_bare_file_name_is_not_a_file_in_the_crate(tmp_path, monkeypatch):
     assert finding["primary"]["line"] == 117
     files = [fr["location"]["file"] for s in finding["stacks"] for fr in s["frames"] if fr["location"]]
     assert "lowlevel_strided_loops.c" in files, "kept as the symbolizer wrote it"
+
+
+# mutator-numpy-copy.log is trimmed and renamed from a real report: a mutator
+# (`ftm-refill_rows`) refills a numpy array in place from Python while two
+# methods of the extension read it through the buffer protocol. numpy's copy
+# loop has only a bare file name in its debug info.
+MUTATOR_LOG = "mutator-numpy-copy.log"
+
+
+def test_a_mutator_copying_into_a_foreign_buffer_is_a_harness_race():
+    """No CPython routine on the mutator's stack: numpy's copy loop calls
+    memmove. Still a content rewrite, not the extension's bug."""
+    from ftcheck.ci.tsan import HARNESS
+
+    reports = parse(load(MUTATOR_LOG))
+    assert len(reports) == 2
+    assert [attribute(r, EXAMPLE) for r in reports] == [HARNESS, HARNESS]
+    mine, reached, other = to_findings(reports, EXAMPLE, "/src")
+    assert mine == [] and reached == []
+    assert other and all(f["message"].startswith("A mutator rewrote") for f in other)
+
+
+def test_a_harness_race_is_located_at_the_extensions_read():
+    """The mutator's side is the harness; the line worth reading is yours."""
+    _, _, other = to_findings(parse(load(MUTATOR_LOG)), EXAMPLE, "/src")
+    assert sorted((f["primary"]["file"], f["primary"]["line"]) for f in other) == [
+        ("src/lib.rs", 117),
+        ("src/lib.rs", 141),
+    ]
+
+
+def test_a_mutator_that_resizes_while_copying_is_still_yours():
+    """A realloc on the mutator's side can free what the extension reads."""
+    report = _race(
+        [f"scan /tmp/c/src/lib.rs:117:14 {EXT}"],
+        [*MUTATOR_COPY, "PyArray_Resize shape.c (_multiarray_umath.cpython-314t-x86_64-linux-gnu.so+0x8)"],
+        writer_name="ftm-grow",
+    )
+    assert attribute(report, EXAMPLE) == YOURS
+
+
+def test_a_mutator_memmove_inside_a_cpython_container_is_still_yours():
+    """list.insert shifts items with memmove under the list's critical
+    section; an extension reading the list without one is at fault."""
+    report = _race(
+        [f"scan /tmp/c/src/lib.rs:117:14 {EXT}"],
+        ["__tsan_memmove <null> (python3.14+0x9)", f"list_ass_slice_lock_held /cpython/Objects/listobject.c:700:5 {PY}"],
+        writer_name="ftm-shift",
+    )
+    assert attribute(report, EXAMPLE) == YOURS
+
+
+def test_a_mutator_copying_through_the_extension_is_still_yours():
+    """With a frame of yours on the mutator's side, the copy is your code's."""
+    report = _race(
+        [f"scan /tmp/c/src/lib.rs:117:14 {EXT}"],
+        ["__tsan_memcpy <null> (python3.14+0x9)", f"fill /tmp/c/src/lib.rs:60:9 {EXT}"],
+        writer_name="ftm-fill",
+    )
+    assert attribute(report, EXAMPLE) == YOURS
+
+
+def test_a_harness_race_run_from_the_crate_root_is_not_located_in_the_dependency(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    text = load(MUTATOR_LOG).replace(" /src/src/", f" {tmp_path}/src/")
+    _, _, other = to_findings(parse(text), EXAMPLE, str(tmp_path))
+    assert other and {f["primary"]["file"] for f in other} == {"src/lib.rs"}
+
+
+PYO3_FFI = "/opt/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-ffi-0.26.0"
