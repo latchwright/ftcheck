@@ -60,10 +60,21 @@ Known gaps, each still open:
   single-threaded baseline never sees the mutator's transient state. The finding says
   when mutators were running, but does not check whether one caused it. A mutator must
   keep the shared inputs valid at every instant.
-- **Some dependency-internal TSan reports still fail runs.** Beyond the suppressed
-  crossbeam-deque race, reports inside dependencies' fence-based synchronisation (which
-  TSan does not model) and glibc's thread-local teardown can be filed as "in your
-  extension" with no frame of yours on either access.
+- **Other dependencies' fence-based synchronisation can still fail runs.** TSan does
+  not model standalone fences. ftcheck suppresses the reports it knows of in common
+  dependencies — crossbeam-deque, `oneshot`, crossbeam-epoch 0.9.18 and older, and
+  glibc's thread-local teardown (see [ci.md](ci.md#attribution-yours-reached-from-yours-or-not-yours)) — but a dependency
+  that synchronises the same way and is not on that list is still filed as "in your
+  extension". Add a `--suppressions` file for it, scoped to the dependency's frames.
+- **The glibc teardown suppression can hide a use-after-free.** The report's own frame
+  is the `free` interceptor, so the entry matches `_dl_deallocate_tls` anywhere on the
+  stack. A genuine race on a finished thread's thread-local, reached by another thread
+  through a pointer that escaped it, is hidden with the false report. Safe Rust cannot
+  express that; `unsafe` code can.
+- **Your own accesses ordered only by such a fence are reported.** Data you write before
+  a `oneshot` send and read after the receive is ordered by the channel's fence, which
+  TSan cannot see, so the access looks unordered in your code. Suppressing it would hide
+  real races, so ftcheck does not.
 
 ## The lint on public projects
 
