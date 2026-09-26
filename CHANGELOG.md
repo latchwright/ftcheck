@@ -15,6 +15,29 @@
   (the crate root, in the image) it became a finding's primary location and merge key.
 - **Races outside the extension are located at the plain access**, not at an atomic
   helper from CPython's `pyatomic*.h` on the other side.
+- **`ci` runs the tests the project configures.** With no `--tests`, the default is now
+  pytest's `testpaths` (then `tests/`, then the project root), and the summary says which
+  was chosen. Test requirements come from a `requirements.txt` beside the selected tests:
+  `--tests other` no longer installs `tests/requirements.txt`.
+- **`strip = true` under `[tool.maturin]` is overridden**, not only warned about: the
+  instrumented build sets `MATURIN_STRIP=false` (maturin 1.12 or later).
+- **Build scripts that import Python packages build.** `[build-system].requires`, less
+  maturin, is installed into a build venv that is first on `PATH` for the build.
+- **Raw TSan logs are kept per run.** Each run writes to `tsan-runs/<UTC time>[-seed<N>]/`
+  under the work directory, named in the summary; the last five are kept (previously one
+  generation, `tsan-previous/`, which back-to-back seeds overwrote).
+- **A pytest session that ends early is caught without an `INTERNALERROR`.** When the
+  session ran fewer tests than it collected, and not because of `-x` or `--maxfail`, `ci`
+  exits `3` ("pytest stopped after X of N collected tests"). A JUnit file left by an
+  earlier run is removed first, so a session that dies before writing one is never read
+  with the previous run's counts.
+
+### Added
+
+- **A note when a module re-enables the GIL.** `ci` and `stress` import each extension
+  module once without `PYTHON_GIL`; if the GIL comes back on (no `gil_used = false`), the
+  summary says the results hold only with `PYTHON_GIL=0`. `stress` now prints the
+  pipeline's notes.
 
 ### Changed
 

@@ -74,6 +74,7 @@ class Outcome:
     tests_collected: int = 0
     tests_failed: int = 0
     tests_errored: int = 0
+    tests_skipped: int = 0
     pytest_exit: int | None = None
 
 
@@ -199,6 +200,9 @@ def _uninstrumented_libraries(wheel: pathlib.Path, work: pathlib.Path) -> list[s
 
 
 _COLLECTED = re.compile(r"[Cc]ollected (\d+) items?")
+# The session's own count, printed before any test runs: the first line that
+# starts with it (a test's captured output can print another).
+_SESSION_COLLECTED = re.compile(r"^[Cc]ollected (\d+) items?", re.MULTILINE)
 _SUMMARY = re.compile(r"^=+ (.*(?:passed|failed|error|no tests ran).*) =+$", re.MULTILINE)
 
 
@@ -218,6 +222,17 @@ def _read_session(out: Outcome, log: pathlib.Path) -> None:
     if "INTERNALERROR" in text:
         of = f" of {max(collected)} collected" if collected else ""
         out.aborted = f"pytest aborted with an INTERNALERROR after {out.tests_collected} tests{of}"
+        return
+    # A session can also end part-way without saying why. -x and --maxfail
+    # stop on purpose, and pytest prints "stopping after" when they do.
+    first = _SESSION_COLLECTED.search(text)
+    if out.pytest_exit not in (0, 1) or not first or "stopping after" in text:
+        return
+    # -q prints no bordered summary, so the deselected count is read anywhere.
+    deselected = re.findall(r"(\d+) deselected", text)
+    seen = out.tests_collected + out.tests_skipped + (int(deselected[-1]) if deselected else 0)
+    if seen < int(first[1]):
+        out.aborted = f"pytest stopped after {seen} of {first[1]} collected tests"
 
 
 def _build_backend(project: pathlib.Path) -> str | None:
@@ -248,6 +263,29 @@ def _build_backend(project: pathlib.Path) -> str | None:
     return None
 
 
+def _build_requirements(project: pathlib.Path) -> list[str]:
+    """`[build-system].requires`, less maturin itself.
+
+    A build script can import Python packages (cffi and setuptools, on a
+    public project), and nothing installed them. maturin is left out: the
+    image's own binary builds, and a pip-installed one would shadow it.
+    """
+    import tomllib
+
+    try:
+        data = tomllib.loads((project / "pyproject.toml").read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return []
+    requires = data.get("build-system", {}).get("requires", [])
+    kept = []
+    for req in requires:
+        name = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", req)
+        if name and re.sub(r"[-_.]+", "-", name.group(1)).lower() == "maturin":
+            continue
+        kept.append(req)
+    return kept
+
+
 def _stripped(path: pathlib.Path) -> bool:
     import shutil
 
@@ -257,21 +295,98 @@ def _stripped(path: pathlib.Path) -> bool:
     sections = subprocess.run(
         [readelf, "-S", str(path)], capture_output=True, text=True, check=False
     ).stdout
-    return ".symtab" not in sections
+    # No section headers at all means readelf could not read it: not stripped.
+    return "Section Headers" in sections and ".symtab" not in sections
 
 
-def _count_tests(junit: pathlib.Path) -> tuple[int, int, int]:
-    """(collected, failed, errored) from pytest's JUnit XML."""
+def _count_tests(junit: pathlib.Path) -> tuple[int, int, int, int]:
+    """(collected, failed, errored, skipped) from pytest's JUnit XML.
+
+    `collected` leaves the skipped tests out: they exercised nothing.
+    """
     try:
         root = ElementTree.parse(junit).getroot()
     except (OSError, ElementTree.ParseError):
-        return 0, 0, 0
+        return 0, 0, 0, 0
     suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
     tests = sum(int(s.get("tests", 0)) for s in suites)
     skipped = sum(int(s.get("skipped", 0)) for s in suites)
     failed = sum(int(s.get("failures", 0)) for s in suites)
     errors = sum(int(s.get("errors", 0)) for s in suites)
-    return tests - skipped, failed, errors
+    return tests - skipped, failed, errors, skipped
+
+
+# Printed True only on a free-threaded build whose GIL came back on import.
+_GIL_PROBE = (
+    "import importlib, sys, sysconfig\n"
+    "importlib.import_module(sys.argv[1])\n"
+    "print(bool(sysconfig.get_config_var('Py_GIL_DISABLED')) and sys._is_gil_enabled())\n"
+)
+
+
+def _reenables_gil(python: str, module: str, env: dict, cwd) -> bool | None:
+    """Whether importing `module` turns the GIL back on; None if the probe failed.
+
+    Run without PYTHON_GIL, which is how the module's users will import it.
+    """
+    probe_env = {k: v for k, v in env.items() if k != "PYTHON_GIL"}
+    try:
+        proc = subprocess.run(
+            [python, "-c", _GIL_PROBE, module],
+            capture_output=True, text=True, env=probe_env, cwd=cwd, timeout=300, check=False,
+        )  # fmt: skip
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    last = proc.stdout.strip().splitlines()[-1:]
+    if proc.returncode != 0 or not last:
+        return None
+    return {"True": True, "False": False}.get(last[0])
+
+
+def _gil_notes(python: str, modules: list[str], env: dict, cwd) -> list[str]:
+    return [
+        f"`{module}` does not declare `gil_used = false`, so a free-threaded interpreter "
+        "re-enables the GIL when it is imported. This run forced the GIL off "
+        "(PYTHON_GIL=0): its results describe the module only when it is imported that "
+        "way. Declare `#[pymodule(gil_used = false)]` once the module is thread-safe."
+        for module in modules
+        if _reenables_gil(python, module, env, cwd)
+    ]
+
+
+def _make_venv(env: Environment, venv: pathlib.Path, log: pathlib.Path, setup_env: dict) -> bool:
+    """A venv on the TSan interpreter, unless one is already there."""
+    if (venv / "bin" / "python").exists():
+        return True
+    _log(f"creating {venv.name}")
+    cmd = [env.interpreter["executable"], "-m", "venv", str(venv)]
+    return _stream(cmd, log, env=setup_env) == 0
+
+
+# Raw TSan logs are the evidence behind a finding; a rerun must not erase them.
+_KEEP_TSAN_RUNS = 5
+
+
+def _new_tsan_dir(work: pathlib.Path, label: str = "") -> pathlib.Path:
+    """A fresh `tsan-runs/<UTC time>[-label]/` for this run's raw logs.
+
+    The last five runs are kept: one saved generation was not enough when
+    several seeds ran back to back.
+    """
+    import shutil
+    from datetime import UTC, datetime
+
+    runs = work / "tsan-runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    name = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + (f"-{label}" if label else "")
+    path, n = runs / name, 1
+    while path.exists():
+        n += 1
+        path = runs / f"{name}-{n}"
+    path.mkdir()
+    for old in sorted(d for d in runs.iterdir() if d.is_dir())[:-_KEEP_TSAN_RUNS]:
+        shutil.rmtree(old, ignore_errors=True)
+    return path
 
 
 @dataclass
@@ -284,13 +399,18 @@ class Prepared:
 
 
 def prepare(
-    env: Environment, opts: Options, out: Outcome, install_runner: bool = True
+    env: Environment,
+    opts: Options,
+    out: Outcome,
+    install_runner: bool = True,
+    run_label: str = "",
 ) -> Prepared | None:
     """Stages 1 and 2: instrumented build, isolated install. None on failure.
 
     `install_runner=False` skips pytest and pytest-run-parallel, which only `ci`
     uses: `stress` runs no tests, and every download is one more thing a flaky
-    network can stall.
+    network can stall. `run_label` names this run's TSan log directory
+    (`stress` passes its seed).
     """
     work = opts.work_dir
     work.mkdir(parents=True, exist_ok=True)
@@ -320,12 +440,45 @@ def prepare(
         # A project's `strip = true` would erase every frame name from the
         # reports (seen on two public projects).
         "CARGO_PROFILE_RELEASE_STRIP": "false",
+        # ...and so would `strip = true` under [tool.maturin], which maturin
+        # applies itself; since 1.12 this variable overrides pyproject.toml.
+        # An older maturin ignores it, and the stripped-library warning remains.
+        "MATURIN_STRIP": "false",
         # C and C++ built by build scripts (the `cc` crate honours these) must be
         # instrumented too, and by the clang that built the interpreter: gcc's
         # libtsan is a different runtime from the one already loaded.
         "CFLAGS": (os.environ.get("CFLAGS", "") + " -fsanitize=thread -g").strip(),
         "CXXFLAGS": (os.environ.get("CXXFLAGS", "") + " -fsanitize=thread -g").strip(),
     }
+    # Setup runs under TSan too — it is the same interpreter — but its reports
+    # are CPython's and pip's, not the project's, so they go to a separate log.
+    setup_env = {
+        **os.environ,
+        "TSAN_OPTIONS": _tsan_options(env, work / "setup-tsan", opts.suppressions),
+    }
+    build_requires = _build_requirements(opts.project)
+    if build_requires:
+        # A venv of their own, on PATH for the build: the test venv then holds
+        # only what the project declares for its tests.
+        build_venv = work / "build-venv"
+        deps_log = work / "build-deps.log"
+        _log(f"installing the build requirements ({', '.join(build_requires)})")
+        if not _make_venv(env, build_venv, deps_log, setup_env):
+            out.error = "could not create a venv for the build requirements"
+            out.log = _tail(deps_log)
+            return None
+        cmd = [
+            str(build_venv / "bin" / "python"), "-m", "pip", "install", "--quiet",
+            "--disable-pip-version-check", *build_requires,
+        ]  # fmt: skip
+        if _stream(cmd, deps_log, env=setup_env) != 0:
+            out.error = "could not install the project's [build-system].requires"
+            out.log = _tail(deps_log)
+            out.log_path = str(deps_log)
+            return None
+        build_env["PATH"] = os.pathsep.join(
+            [str(build_venv / "bin"), os.environ.get("PATH", os.defpath)]
+        )
     if env.cc:
         build_env["CC"] = env.cc
     if env.cxx:
@@ -362,34 +515,17 @@ def prepare(
     # --- 2. an isolated venv on the TSan interpreter ---------------------------
     out.stage = "install"
     venv = work / "venv"
-    tsan_dir = work / "tsan"
-    tsan_dir.mkdir(exist_ok=True)
-    # The previous run's raw logs move aside instead of being deleted — a rerun
-    # in the same work directory once erased the only logs of a confirmed race.
-    previous = work / "tsan-previous"
-    old_logs = [f for f in tsan_dir.glob("*") if f.is_file()]
-    if old_logs:
-        if previous.exists():
-            for f in previous.glob("*"):
-                f.unlink()
-        previous.mkdir(exist_ok=True)
-        for f in old_logs:
-            f.rename(previous / f.name)
-    # Setup runs under TSan too — it is the same interpreter — but its reports
-    # are CPython's and pip's, not the project's, so they go to a separate log.
-    setup_env = {
-        **os.environ,
-        "TSAN_OPTIONS": _tsan_options(env, work / "setup-tsan", opts.suppressions),
-    }
+    # A directory per run — a rerun in the same work directory once erased the
+    # only logs of a confirmed race.
+    tsan_dir = _new_tsan_dir(work, run_label)
+    _log(f"raw ThreadSanitizer logs go to {tsan_dir}")
+    out.notes.append(f"raw ThreadSanitizer logs: {tsan_dir}")
     install_log = work / "install.log"
     python = str(venv / "bin" / "python")
-    if not pathlib.Path(python).exists():
-        _log("creating venv")
-        cmd = [env.interpreter["executable"], "-m", "venv", str(venv)]
-        if _stream(cmd, install_log, env=setup_env) != 0:
-            out.error = "could not create a venv on the TSan interpreter"
-            out.log = _tail(install_log)
-            return None
+    if not _make_venv(env, venv, install_log, setup_env):
+        out.error = "could not create a venv on the TSan interpreter"
+        out.log = _tail(install_log)
+        return None
     spec = str(wheel) + (f"[{','.join(opts.extras)}]" if opts.extras else "")
     _log(f"installing {wheel.name} and the test runner")
     cmd = [
@@ -411,7 +547,7 @@ def prepare(
         return None
 
     if install_runner and opts.test_deps:
-        declared = _declared_test_dependencies(opts.project)
+        declared = _declared_test_dependencies(opts.project, _select_tests(opts)[0])
         if declared:
             label, extra_args = declared
             if extra_args and extra_args[0] == "{wheel}":
@@ -429,10 +565,78 @@ def prepare(
                 return None
             out.notes.append(f"installed the project's test dependencies from {label}")
 
+    # Every run forces PYTHON_GIL=0; say when that hides what users would get.
+    out.notes.extend(
+        _gil_notes(python, native_modules(wheel), {**setup_env, "PYTHONSAFEPATH": "1"}, work)
+    )
     return Prepared(python=python, wheel=wheel, tsan_dir=tsan_dir)
 
 
-def _declared_test_dependencies(project: pathlib.Path) -> tuple[str, list[str]] | None:
+def _pytest_testpaths(project: pathlib.Path) -> tuple[list[str], str] | None:
+    """`testpaths` from the project's pytest configuration, and the file it is in.
+
+    Files are tried in pytest's own order, and the first one that configures
+    pytest decides, even if it sets no `testpaths`.
+    """
+    import configparser
+    import tomllib
+
+    for name, section in (
+        ("pytest.ini", "pytest"), (".pytest.ini", "pytest"), ("pyproject.toml", None),
+        ("tox.ini", "pytest"), ("setup.cfg", "tool:pytest"),
+    ):  # fmt: skip
+        path = project / name
+        if not path.is_file():
+            continue
+        if section is None:
+            try:
+                tool = tomllib.loads(path.read_text()).get("tool", {})
+            except (OSError, tomllib.TOMLDecodeError):
+                continue
+            table = tool.get("pytest")
+            if not isinstance(table, dict):
+                continue
+            # pytest 9's native `[tool.pytest]`, or the older `ini_options`.
+            table = table.get("ini_options", table)
+            value = table.get("testpaths")
+        else:
+            parser = configparser.ConfigParser(interpolation=None)
+            try:
+                parser.read(path)
+            except (OSError, configparser.Error):
+                continue
+            if not parser.has_section(section):
+                continue
+            value = parser.get(section, "testpaths", fallback=None)
+        if isinstance(value, str):
+            value = value.split()
+        return list(value or []), name
+    return None
+
+
+def _select_tests(opts: Options) -> tuple[list[str], str]:
+    """The test paths to run, and why these: `--tests`, pytest's `testpaths`,
+    `tests/`, else the project root."""
+    if opts.tests:
+        return list(opts.tests), "--tests"
+    configured = _pytest_testpaths(opts.project)
+    if configured:
+        patterns, source = configured
+        # pytest expands globs in testpaths and ignores entries that match nothing.
+        paths = []
+        for pattern in patterns:
+            found = sorted(glob.glob(pattern, root_dir=opts.project))
+            paths += [p for p in found if p not in paths]
+        if paths:
+            return paths, f"testpaths in {source}"
+    if (opts.project / "tests").is_dir():
+        return ["tests"], "tests/ directory"
+    return ["."], "no tests/ directory"
+
+
+def _declared_test_dependencies(
+    project: pathlib.Path, tests: list[str] | None = None
+) -> tuple[str, list[str]] | None:
     # Returns (label, pip arguments); ["{wheel}", extra] means "the built wheel
     # with this extra", resolved by the caller, which knows the wheel.
     """Where the project declares its test dependencies, as pip arguments.
@@ -440,8 +644,9 @@ def _declared_test_dependencies(project: pathlib.Path) -> tuple[str, list[str]] 
     Neither project in a first-user trial got past test collection: the venv
     held only the wheel and the runner. In order: a PEP 735 dependency group
     (`test`, `tests`, `testing`), an optional-dependencies extra of those
-    names, a conventional requirements file; `dev` last, as it often carries
-    whole toolchains. `--no-test-deps` turns this off.
+    names, a `requirements.txt` beside the selected tests (`tests` defaults
+    to `tests/`), a conventional requirements file at the root; `dev` last,
+    as it often carries whole toolchains. `--no-test-deps` turns this off.
     """
     import tomllib
 
@@ -462,7 +667,15 @@ def _declared_test_dependencies(project: pathlib.Path) -> tuple[str, list[str]] 
             # Applied to the instrumented wheel, never `.[name]`: installing
             # from the source tree would build a second, uninstrumented copy.
             return f"extra '{name}'", ["{wheel}", name]
-    for rel in ("tests/requirements.txt", "requirements-test.txt", "requirements-tests.txt",
+    # Beside the tests being run, never a `tests/` that is not among them.
+    beside = []
+    for test in tests if tests is not None else ["tests"]:
+        folder = test if (project / test).is_dir() else os.path.dirname(test)
+        rel = os.path.normpath(os.path.join(folder, "requirements.txt"))
+        # The root's requirements.txt is the package's own, not its tests'.
+        if os.path.dirname(rel) and rel not in beside:
+            beside.append(rel)
+    for rel in (*beside, "requirements-test.txt", "requirements-tests.txt",
                 "test-requirements.txt", "requirements/test.txt", "requirements/tests.txt",
                 "requirements-dev.txt", "requirements/dev.txt"):  # fmt: skip
         if (project / rel).is_file():
@@ -531,7 +744,10 @@ def run(env: Environment, opts: Options) -> Outcome:
 
     out.stage = "test"
     junit = work / "pytest-junit.xml"
-    tests = opts.tests or (["tests"] if (opts.project / "tests").is_dir() else ["."])
+    # A session that dies before writing it must not inherit the last run's counts.
+    junit.unlink(missing_ok=True)
+    tests, chosen = _select_tests(opts)
+    out.notes.append(f"running {' '.join(tests)} ({chosen})")
     cmd = [
         prepared.python, "-m", "pytest", *tests,
         f"--parallel-threads={opts.threads}",
@@ -548,7 +764,9 @@ def run(env: Environment, opts: Options) -> Outcome:
         cmd, test_log, cwd=opts.project, env=runtime_env(env, opts, prepared.tsan_dir)
     )
     out.log = _tail(test_log)
-    out.tests_collected, out.tests_failed, out.tests_errored = _count_tests(junit)
+    out.tests_collected, out.tests_failed, out.tests_errored, out.tests_skipped = _count_tests(
+        junit
+    )
     _read_session(out, test_log)
 
     collect(out, prepared.tsan_dir, opts.project, test_log.read_text(errors="replace"))
