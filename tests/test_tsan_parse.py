@@ -336,3 +336,23 @@ def test_a_thin_ffi_wrapper_is_not_the_primary_location():
     )
     (finding,), _, _ = to_findings([report], EXAMPLE, CRATE)
     assert finding["primary"]["file"] == "src/encode/model.rs"
+
+
+MUTATOR_COPY = ["memmove <null> (python3.14+0x9)",
+                "_contig_to_contig lowlevel_strided_loops.c (_multiarray_umath.cpython-314t-x86_64-linux-gnu.so+0x7)"]
+
+
+def test_a_bare_file_name_is_not_a_file_in_the_crate(tmp_path, monkeypatch):
+    """An uninstrumented library's debug info can name a source file with no
+    directory. Resolved against the working directory — the crate root, in
+    the image — it looked like a crate file and became the primary location.
+    The test must run from the crate root: that is what exposed it."""
+    root = str(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    # The dependency's side comes first, as it did in the report that exposed it.
+    report = _race(MUTATOR_COPY, [f"scan {root}/src/lib.rs:117:14 {EXT}"])
+    (finding,), _, _ = to_findings([report], EXAMPLE, root)
+    assert finding["primary"]["file"] == "src/lib.rs"
+    assert finding["primary"]["line"] == 117
+    files = [fr["location"]["file"] for s in finding["stacks"] for fr in s["frames"] if fr["location"]]
+    assert "lowlevel_strided_loops.c" in files, "kept as the symbolizer wrote it"

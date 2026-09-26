@@ -320,7 +320,15 @@ def _rule(kind: str) -> str:
 
 
 def _relative(path: str, root: str) -> str | None:
-    """`path` relative to `root`, or None when it lies outside it."""
+    """`path` relative to `root`, or None when it lies outside it.
+
+    Only an absolute path can be in the crate. A bare file name comes from an
+    uninstrumented library's debug info (`lowlevel_strided_loops.c`); resolved
+    against the working directory, which is the crate root in the image, it
+    would pass for a crate file.
+    """
+    if not os.path.isabs(path):
+        return None
     try:
         rel = os.path.relpath(os.path.realpath(path), os.path.realpath(root))
     except ValueError:
