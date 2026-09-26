@@ -21,6 +21,24 @@
 - Race messages name the threads (`by thread T5 (ftm-refill)`), the text summary labels
   each stack with its thread, and JSON stacks carry a `thread` field.
 - A race whose access is in PyO3's own source says so, with the PyO3 version and line.
+- **`stress/panic` is located per call, not per message.** The driver records the native
+  thread of each panic and Rust prints the same id in its panic line, so two sites that
+  panic with the same message are two findings, each naming the callables that panicked
+  there with their own counts. When Rust prints no thread id, a finding lists every
+  site that shares the message.
+- **A panic inside a dependency says so.** The message names the dependency and its
+  version (and PyO3's argument conversion when the site is there), and the headline
+  counts it as "inside a dependency, reached from your extension". When the log holds a
+  Rust backtrace, the first frame in the crate's own code is the location.
+- A `stress/panic` message says when mutators were running.
+
+### JSON
+
+- `stress.panics`: every distinct panic message per callable, with a count.
+- `stress.panic_threads`: per native thread id, the panicking calls in order, as
+  `[callable, message, count]` runs.
+- A `stress/panic` finding inside a dependency carries `dependency` (for example
+  `"pyo3 0.29.2"`).
 
 ## 0.1.0 — 2026-09-25
 

@@ -179,3 +179,15 @@ def test_the_gap_fixture_is_invisible_to_ci_and_caught_by_stress(results):
     stress = results[("stress-unshared-state", "stress")]
     assert ci["exit_code"] == 0 and ci["findings"] == []
     assert stress["exit_code"] == 1 and stress["findings"]
+
+
+def test_two_panic_sites_with_one_message_are_reported_at_their_own_lines(results):
+    """Matched by message, both methods were filed under one line."""
+    report = results[("stress-panic-two-sites", "stress")]
+    panics = [f for f in report["findings"] if f["rule"] == "stress/panic"]
+    by_line = {f["primary"]["line"]: f for f in panics}
+    assert sorted(by_line) == [28, 34], [f["primary"] for f in panics]
+    assert by_line[28]["symbol"].endswith("Queue.head")
+    assert "Queue.tail" not in by_line[28]["message"]
+    assert by_line[34]["symbol"].endswith("Queue.tail")
+    assert "Queue.head" not in by_line[34]["message"]

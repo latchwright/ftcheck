@@ -77,6 +77,9 @@ _PASS_THROUGH = (KeyboardInterrupt, SystemExit)
 
 _MAX_COMBOS = 64      # derivation attempts per callable
 _MAX_ARGSETS = 3      # distinct argument tuples kept per callable
+_MAX_PANIC_MESSAGES = 20   # distinct panic messages kept per callable
+_MAX_PANIC_RUNS = 256      # changes of (callable, message) recorded per thread
+_MAX_PANIC_RUNS_TOTAL = 20000  # and in the whole run, to bound the result file
 
 
 class Progress:
@@ -610,9 +613,17 @@ class Counters:
         self.returned = {}
         self.exceptions = {}
         self.messages = {}      # qual -> {exception name: first message}
+        self.panics = {}        # qual -> {panic message: count}
+        # Native thread id -> [[qual, message, count], ...], in call order. Rust
+        # prints the same id in its panic line, so the orchestrator can tell
+        # which call panicked at which site: two sites with one message were
+        # otherwise indistinguishable (one was filed under the other).
+        self.panic_threads = {}
+        self._panic_full = set()
+        self._panic_runs = 0
         self.total = 0          # every call, for progress: a hang is no call finishing
 
-    def record(self, qual, exc_name, message=None):
+    def record(self, qual, exc_name, message=None, tid=None):
         with self.lock:
             self.total += 1
             self.calls[qual] = self.calls.get(qual, 0) + 1
@@ -623,9 +634,31 @@ class Counters:
                 per[exc_name] = per.get(exc_name, 0) + 1
                 if message is not None:
                     self.messages.setdefault(qual, {}).setdefault(exc_name, message[:300])
+            if exc_name == "PanicException" and message is not None:
+                self._record_panic(qual, message[:300], tid)
+
+    def _record_panic(self, qual, message, tid):
+        per = self.panics.setdefault(qual, {})
+        if message in per or len(per) < _MAX_PANIC_MESSAGES:
+            per[message] = per.get(message, 0) + 1
+        key = str(tid)
+        if tid is None or key in self._panic_full:
+            return
+        runs = self.panic_threads.setdefault(key, [])
+        if runs and runs[-1][0] == qual and runs[-1][1] == message:
+            runs[-1][2] += 1
+        elif len(runs) < _MAX_PANIC_RUNS and self._panic_runs < _MAX_PANIC_RUNS_TOTAL:
+            self._panic_runs += 1
+            runs.append([qual, message, 1])
+        else:
+            # Past the cap the thread records nothing more, so what it did
+            # record stays in step with its panic lines. Its later panics are
+            # located by message, as when no thread id is known.
+            self._panic_full.add(key)
 
 
 def _worker(shared, work, rng, iterations, counters, barrier, errors, deadline):
+    tid = threading.get_native_id()
     try:
         barrier.wait()
         for _ in range(iterations):
@@ -643,7 +676,7 @@ def _worker(shared, work, rng, iterations, counters, barrier, errors, deadline):
             except BaseException as exc:
                 exc_name = type(exc).__name__
                 message = str(exc)
-            counters.record(qual, exc_name, message)
+            counters.record(qual, exc_name, message, tid)
             # Seeded yield points perturb the interleaving reproducibly.
             if rng.random() < 0.05:
                 time.sleep(0)
@@ -674,6 +707,7 @@ def _heartbeat(progress, step, counters, done, on_tick=None):
 
 def _mutator(name, mutate, counters, done):
     """Runs one declared mutator in a loop until the phase ends."""
+    tid = threading.get_native_id()
     while not done.is_set():
         exc_name = message = None
         try:
@@ -682,7 +716,7 @@ def _mutator(name, mutate, counters, done):
             raise
         except BaseException as exc:
             exc_name, message = type(exc).__name__, str(exc)
-        counters.record(f"mutator:{name}", exc_name, message)
+        counters.record(f"mutator:{name}", exc_name, message, tid)
         time.sleep(0)
 
 
@@ -891,6 +925,8 @@ def _write_result_locked(cfg, seed, started, surface, groups, counters, complete
         returned = dict(counters.returned)
         exceptions = {k: dict(v) for k, v in counters.exceptions.items()}
         messages = {k: dict(v) for k, v in counters.messages.items()}
+        panics = {k: dict(v) for k, v in counters.panics.items()}
+        panic_threads = {k: [list(r) for r in v] for k, v in counters.panic_threads.items()}
     for g in groups:
         g["raised_all"] = [q for q in g.get("driven", []) if calls.get(q) and not returned.get(q)]
     result = {
@@ -906,6 +942,8 @@ def _write_result_locked(cfg, seed, started, surface, groups, counters, complete
         "returned": returned,
         "exceptions": exceptions,
         "messages": messages,
+        "panics": panics,
+        "panic_threads": panic_threads,
     }
     tmp = cfg["output_path"] + ".tmp"
     with open(tmp, "w") as fh:

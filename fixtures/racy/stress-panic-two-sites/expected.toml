@@ -1,0 +1,5 @@
+race = false
+rules = []
+stress_rules = ["stress/panic"]
+symbols = ["head", "tail"]
+justification = "Two `try_lock().expect()` sites with the same message on one shared instance: neither panics on one thread, each panics at its own line once two threads overlap. Not a data race (a real mutex guards the data), so TSan must stay silent. `stress` must report two stress/panic findings, one per line, each naming only the method that panicked there. Matching panics to sites by message text filed both under one line."

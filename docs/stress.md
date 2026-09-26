@@ -134,7 +134,7 @@ was, so that shows mutators reach this class of bug, not that they find it unaid
 
 A mutator must keep the shared inputs **valid at every instant**. The baseline never sees
 a mutator's transient state, so a call that panics on input the mutator made invalid is
-reported as a panic under concurrency.
+reported as a panic under concurrency. The finding says that mutators were running.
 
 A mutator that only **rewrites a buffer's contents** in place (a slice assignment into a
 `bytearray` the extension is reading, or a numpy array refilled with `arr[:] = ...`) races
@@ -199,10 +199,15 @@ across Python threads, so they are neither driven nor counted as a coverage hole
 
 **Panics under contention are findings.** A Rust panic (`PanicException`) that a
 callable raises under concurrency but never in its baseline is
-reported as `stress/panic`, with the count, the first panic message and — from Rust's
+reported as `stress/panic`, with the count, the panic message and — from Rust's
 own panic output — the source line that panicked. Callables panicking at the same line are
-one finding. The line is matched by panic message, so two sites panicking with the same
-message can be filed under one of them (see Limits). It is not a data
+one finding, with each callable's own count. The driver records the thread each panic
+happened on, and Rust prints the same thread id in its panic line, so two sites panicking
+with the same message are two findings. A panic inside a dependency (PyO3, another crate,
+the standard library) says so and carries a `dependency` field, and the headline counts it
+as inside a dependency rather than in your extension. When the log holds a Rust
+backtrace (replay with `RUST_BACKTRACE=1` set), the first frame in your own code becomes
+the location. It is not a data
 race and TSan may see nothing, but it is contention the code does not handle — and since
 `PanicException` is a `BaseException`, callers' `except Exception` will not catch it.
 A panic the baseline also raised is how the method treats those arguments, and
@@ -289,9 +294,9 @@ relative to that directory. Every run prints the complete command that replays i
 - **Wrong results are not checked.** A call that returns a wrong value under concurrency
   without raising is invisible; exceptions other than panics that occur only under
   concurrency are counted in the JSON output but not surfaced in the summary.
-- **Panic attribution is coarse.** A panic inside a dependency is located at the
-  dependency's source line, not at your frame that led there; panic sites are matched by
-  message text, so one site can hide another with the same message.
+- **A panic inside a dependency is located at the dependency's line** unless the log holds
+  a backtrace (replay with `RUST_BACKTRACE=1`). When the toolchain prints no thread
+  id in its panic lines, sites that share a message are listed together.
 - **Mutators must keep inputs valid** (above), or their transient state reads as a
-  concurrency panic.
+  concurrency panic; the finding says mutators were running, nothing more.
 - See [limitations.md](limitations.md#what-stress-does-not-report-yet) for the full list.

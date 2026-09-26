@@ -218,29 +218,134 @@ def _hang_finding(step: str, threads: int, seed: int) -> dict:
     }
 
 
+# `thread '<name>' (<tid>) panicked at <file>:<line>:<column>:` then the
+# message. Older Rust prints no thread id.
 _PANIC_AT = re.compile(
+    r"(?:thread '[^'\n]*'(?: \((?P<tid>\d+)\))? )?"
     r"panicked at (?P<file>[^\n]+?):(?P<line>\d+):(?P<column>\d+):\n(?P<message>[^\n]*)"
 )
+_BACKTRACE_FRAME = re.compile(r"^\s+\d+: (?P<symbol>\S.*)$")
+_BACKTRACE_AT = re.compile(r"^\s+at (?P<file>.+?):(?P<line>\d+)(?::(?P<column>\d+))?$")
+_REGISTRY = re.compile(r"/registry/src/[^/]+/(?P<crate>[A-Za-z0-9_.-]+?)-(?P<ver>\d+\.\d+\.\d+[^/]*)/")
+_GIT_CHECKOUT = re.compile(r"/git/checkouts/(?P<crate>[^/]+?)-[0-9a-f]+/")
+_STD = re.compile(r"^/rustc/|/lib/rustlib/src/rust/library/")
+# How far past a thread's last matched panic line the next one is looked for.
+# Extra lines on a thread (a panic the extension caught itself) are skipped.
+_JOIN_WINDOW = 16
 
 
-def panic_locations(log_text: str) -> dict[str, dict]:
-    """Panic message -> where it panicked, from the Rust panic lines in the log.
+def panic_locations(log_text: str) -> list[dict]:
+    """Every Rust panic line in the log, in order: where, on which thread, and
+    the frames if a backtrace follows (only when RUST_BACKTRACE is set).
 
     `PanicException` carries the message but not the location; Rust prints
-    both to stderr (`thread '...' panicked at src/lib.rs:40:17:` then the
-    message), which the driver log captures.
+    both to stderr, which the driver log captures, with the native thread id
+    the driver also records for each panicking call.
     """
-    found: dict[str, dict] = {}
-    for m in _PANIC_AT.finditer(log_text):
-        found.setdefault(
-            m.group("message").strip(),
-            {"file": m.group("file"), "line": int(m.group("line")), "column": int(m.group("column"))},
+    found = []
+    matches = list(_PANIC_AT.finditer(log_text))
+    for i, m in enumerate(matches):
+        tail = log_text[m.end() : matches[i + 1].start() if i + 1 < len(matches) else len(log_text)]
+        found.append(
+            {
+                "tid": int(m.group("tid")) if m.group("tid") else None,
+                "file": m.group("file"),
+                "line": int(m.group("line")),
+                "column": int(m.group("column")),
+                "message": m.group("message").strip(),
+                "frames": _backtrace(tail),
+            }
         )
     return found
 
 
+def _backtrace(tail: str) -> list[dict]:
+    lines = tail.splitlines()
+    try:
+        start = next(i for i, ln in enumerate(lines[:4]) if ln.strip() == "stack backtrace:")
+    except StopIteration:
+        return []
+    frames = []
+    for line in lines[start + 1 :]:
+        frame, at = _BACKTRACE_FRAME.match(line), _BACKTRACE_AT.match(line)
+        if frame:
+            frames.append({"symbol": frame.group("symbol").strip(), "location": None})
+        elif at and frames:
+            file = at.group("file")
+            frames[-1]["location"] = {
+                "file": file.removeprefix("./"),
+                "line": int(at.group("line")),
+                "column": int(at.group("column") or 1),
+            }
+        else:
+            break
+    return frames
+
+
+def _dependency(path: str) -> str | None:
+    """"pyo3 0.29.2" when `path` is a dependency's source, else None (yours)."""
+    if m := _REGISTRY.search(path):
+        return f"{m.group('crate')} {m.group('ver')}"
+    if m := _GIT_CHECKOUT.search(path):
+        return m.group("crate")
+    if _STD.search(path):
+        return "the Rust standard library"
+    return None
+
+
+def _short(path: str) -> str:
+    """A dependency's file from its crate directory on: `pyo3-0.29.2/src/x.rs`."""
+    m = _REGISTRY.search(path) or _GIT_CHECKOUT.search(path)
+    return path[m.start("crate") :] if m else path
+
+
+def _same_message(logged: str, raised: str) -> bool:
+    # The log holds the first line of the message; the driver keeps 300 characters.
+    return logged[:300] == raised.split("\n", 1)[0].strip()
+
+
+def _join(result: dict, events: list[dict], wanted: set[str]) -> tuple[dict, set[int]]:
+    """(qual -> {event index of the site: panics there}, consumed event indices).
+
+    Each thread's panicking calls, in order, are matched to that thread's
+    panic lines, in order, so a site is known per call rather than guessed
+    from the message.
+    """
+    by_tid: dict[int, list[int]] = {}
+    for i, e in enumerate(events):
+        if e["tid"] is not None:
+            by_tid.setdefault(e["tid"], []).append(i)
+    located: dict[str, dict[int, int]] = {}
+    consumed: set[int] = set()
+    for tid, runs in (result.get("panic_threads") or {}).items():
+        mine = by_tid.get(int(tid), [])
+        k = 0
+        for qual, message, count in runs:
+            for _ in range(count):
+                j = next(
+                    (
+                        j
+                        for j in range(k, min(k + _JOIN_WINDOW, len(mine)))
+                        if _same_message(events[mine[j]]["message"], message)
+                    ),
+                    None,
+                )
+                if j is None:
+                    continue
+                k = j + 1
+                consumed.add(mine[j])
+                if qual in wanted:
+                    site = located.setdefault(qual, {})
+                    site[mine[j]] = site.get(mine[j], 0) + 1
+    return located, consumed
+
+
+def _site_key(event: dict) -> str:
+    return f"{event['file']}:{event['line']}"
+
+
 def panic_findings(
-    result: dict | None, threads: int, seed: int, locations: dict[str, dict] | None = None
+    result: dict | None, threads: int, seed: int, locations: list[dict] | None = None
 ) -> list[dict]:
     """Rust panics a callable raised only when driven from many threads.
 
@@ -250,56 +355,152 @@ def panic_findings(
     panic the baseline also raised is how the method behaves
     with those arguments, and is left alone.
 
-    Callables that panic at the same source location are one finding: one
-    `borrow()` shared by many methods produces the same panic in each of them.
+    One finding per source location, naming every callable that panicked
+    there with its own count: one `borrow()` shared by many methods produces
+    the same panic in each of them. The site of each panic comes from joining
+    the driver's per-thread record with the thread id in Rust's panic line.
+    Without thread ids (older Rust), a panic is located by its message, and
+    when several sites share the message the finding names them all.
     """
     if not result:
         return []
-    locations = locations or {}
-    groups: dict[str, dict] = {}
+    events = locations or []
+    totals: dict[str, int] = {}
     for group in result.get("groups", []):
         serial = group.get("serial_exceptions", {})
         for qual in group.get("driven", []):
             n = result.get("exceptions", {}).get(qual, {}).get("PanicException", 0)
-            if not n or "PanicException" in serial.get(qual, []):
-                continue
-            calls = result.get("calls", {}).get(qual, 0)
-            message = result.get("messages", {}).get(qual, {}).get("PanicException", "")
-            where = locations.get(message.strip())
-            key = f"{where['file']}:{where['line']}" if where else f"message:{message}"
-            entry = groups.setdefault(
-                key, {"where": where, "message": message, "callables": [], "panics": 0, "calls": 0}
-            )
-            entry["callables"].append(qual)
-            entry["panics"] += n
-            entry["calls"] += calls
-    out = []
-    for entry in groups.values():
-        callables = entry["callables"]
-        where = entry["where"]
-        named = ", ".join(f"`{q}`" for q in callables[:5]) + (
-            f" and {len(callables) - 5} more" if len(callables) > 5 else ""
+            if n and "PanicException" not in serial.get(qual, []):
+                totals[qual] = n
+    located, consumed = _join(result, events, set(totals))
+
+    groups: dict[str, dict] = {}
+
+    def add(key, sites, message, qual, n):
+        entry = groups.setdefault(key, {"sites": sites, "message": message, "callables": {}})
+        entry["callables"][qual] = entry["callables"].get(qual, 0) + n
+
+    for qual, n in totals.items():
+        for index, count in located.get(qual, {}).items():
+            event = events[index]
+            add(_site_key(event), [event], event["message"], qual, count)
+        rest = n - sum(located.get(qual, {}).values())
+        if rest <= 0:
+            continue
+        # Not joined to a line: located by message, naming every candidate site.
+        raised = result.get("panics", {}).get(qual) or {
+            result.get("messages", {}).get(qual, {}).get("PanicException", ""): rest
+        }
+        pool = [e for i, e in enumerate(events) if i not in consumed] or events
+        sites = {}
+        for message in raised:
+            for e in pool:
+                if _same_message(e["message"], message):
+                    sites.setdefault(_site_key(e), e)
+        first = next(iter(raised), "")
+        if not sites:
+            add(f"message:{first}", [], first, qual, rest)
+        else:
+            ordered = [sites[k] for k in sorted(sites)]
+            add(" | ".join(sorted(sites)), ordered, ordered[0]["message"] or first, qual, rest)
+
+    calls = result.get("calls", {})
+    mutators = result.get("mutators") or []
+    return [
+        _panic_finding(entry, calls, mutators, threads, seed) for entry in groups.values()
+    ]
+
+
+def _inside(dependency: str, site: dict) -> str:
+    where = f"{_short(site['file'])}:{site['line']}"
+    if dependency.startswith("pyo3 ") and (
+        "/conversions/" in site["file"] or "extract_argument" in site["file"]
+    ):
+        return f" inside PyO3's argument conversion ({dependency}, a dependency) at {where}"
+    if dependency.startswith("the Rust"):
+        return f" inside {dependency} at {where}"
+    return f" inside the dependency {dependency} at {where}"
+
+
+def _your_frame(frames: list[dict]) -> tuple[dict | None, list[dict]]:
+    """The first backtrace frame in the crate's own Rust code, and the stack
+    from the first frame outside the standard library down to it."""
+    mine = [
+        i
+        for i, fr in enumerate(frames)
+        if fr["location"]
+        and fr["location"]["file"].endswith(".rs")
+        and _dependency(fr["location"]["file"]) is None
+    ]
+    if not mine:
+        return None, []
+    first = mine[0]
+    start = next(
+        (i for i, fr in enumerate(frames) if fr["location"] and not _STD.search(fr["location"]["file"])),
+        first,
+    )
+    return frames[first], [{"frames": frames[start : first + 1]}]
+
+
+def _panic_finding(entry: dict, calls: dict, mutators: list, threads: int, seed: int) -> dict:
+    callables = entry["callables"]
+    names = list(callables)
+    total = sum(callables.values())
+    n_calls = sum(calls.get(q, 0) for q in names)
+    if len(names) == 1:
+        named = f"{total} of {n_calls} calls to `{names[0]}`"
+    else:
+        each = [f"`{q}` ({callables[q]} of {calls.get(q, 0)})" for q in names[:5]]
+        more = f" and {len(names) - 5} more" if len(names) > 5 else ""
+        named = f"{total} of {n_calls} calls to {', '.join(each)}{more}"
+    sites = entry["sites"]
+    dependency = _dependency(sites[0]["file"]) if len(sites) == 1 else None
+    yours, stacks, reached, hint = None, [], "", ""
+    if dependency:
+        at = _inside(dependency, sites[0])
+        yours, stacks = _your_frame(sites[0]["frames"])
+        if yours:
+            where = yours["location"]
+            reached = f" It was reached from `{yours['symbol']}` at {where['file']}:{where['line']}."
+        else:
+            hint = " (with RUST_BACKTRACE=1 set, to see which of your frames led there)"
+    elif len(sites) == 1:
+        at = f" at {_site_key(sites[0])}"
+    elif sites:
+        at = f" at one of {', '.join(_site_key(e) for e in sites)} (the log does not say which)"
+    else:
+        at = ""
+    mutated = ""
+    if mutators:
+        mutated = (
+            f" Mutators were running ({', '.join(mutators)}): if one can leave the shared "
+            "inputs invalid, this panic may be its doing rather than contention. Mutators "
+            "must keep the inputs valid at every instant."
         )
-        at = f" at {where['file']}:{where['line']}" if where else ""
-        out.append(
-            {
-                "rule": "stress/panic",
-                "message": (
-                    f"Panicked{at} in {entry['panics']} of {entry['calls']} calls to {named} "
-                    f"when driven from {threads} threads, and never in the single-threaded "
-                    f"baseline: {entry['message'] or '(no message)'}. Replay with --replay {seed} "
-                    f"--threads {threads}."
-                ),
-                "confidence": "certain",
-                "producer": "stress",
-                "symbol": callables[0],
-                "primary": where or {"file": "<stress driver>", "line": 1, "column": 1},
-                "stacks": [],
-                "justification": None,
-                "occurrences": len(callables),
-            }
-        )
-    return out
+    if yours:
+        primary = dict(yours["location"])
+    elif sites:
+        primary = {k: sites[0][k] for k in ("file", "line", "column")}
+    else:
+        primary = {"file": "<stress driver>", "line": 1, "column": 1}
+    finding = {
+        "rule": "stress/panic",
+        "message": (
+            f"Panicked{at} in {named} when driven from {threads} threads, and never in the "
+            f"single-threaded baseline: {entry['message'] or '(no message)'}.{reached}"
+            f"{mutated} Replay with --replay {seed} --threads {threads}{hint}."
+        ),
+        "confidence": "certain",
+        "producer": "stress",
+        "symbol": names[0],
+        "primary": primary,
+        "stacks": stacks,
+        "justification": None,
+        "occurrences": len(names),
+    }
+    if dependency:
+        finding["dependency"] = dependency
+    return finding
 
 
 def _crash_logged(tsan_dir: pathlib.Path) -> bool:
