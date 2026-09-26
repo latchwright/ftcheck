@@ -426,3 +426,24 @@ def test_a_harness_race_run_from_the_crate_root_is_not_located_in_the_dependency
 
 
 PYO3_FFI = "/opt/cargo/registry/src/index.crates.io-1949cf8c6b5b557f/pyo3-ffi-0.26.0"
+
+
+def test_the_atomic_side_of_a_race_is_not_its_location():
+    """An atomic load racing a plain write: the plain write is the racy one."""
+    report = _race(
+        [f"_Py_atomic_load_ptr_relaxed /cpython/Include/cpython/pyatomic_gcc.h:513:10 {PY}",
+         f"list_get_item_ref /cpython/Objects/listobject.c:340:12 {PY}"],
+        [f"list_append /cpython/Objects/listobject.c:520:5 {PY}"],
+    )
+    _, _, (finding,) = to_findings([report], EXAMPLE, CRATE)
+    assert finding["symbol"] == "list_append"
+    assert finding["primary"] == {"file": "/cpython/Objects/listobject.c", "line": 520, "column": 5}
+
+
+def test_an_atomic_frame_in_a_pyatomic_header_is_skipped_too():
+    report = _race(
+        [f"atomic_load_relaxed /cpython/Include/cpython/pyatomic_std.h:90:10 {PY}"],
+        [f"list_append /cpython/Objects/listobject.c:520:5 {PY}"],
+    )
+    _, _, (finding,) = to_findings([report], EXAMPLE, CRATE)
+    assert finding["symbol"] == "list_append"

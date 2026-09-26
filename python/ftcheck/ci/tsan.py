@@ -364,6 +364,13 @@ def _relative(path: str, root: str) -> str | None:
     return None if rel == os.pardir or rel.startswith(os.pardir + os.sep) else rel
 
 
+def _is_atomic(frame: Frame) -> bool:
+    """CPython's atomic helpers, inlined from `pyatomic*.h`."""
+    return frame.symbol.startswith("_Py_atomic_") or bool(
+        frame.file and os.path.basename(frame.file).startswith("pyatomic")
+    )
+
+
 def _frames_from_top(section: Section) -> list[Frame]:
     """The stack from its first non-interceptor frame: where the access happened."""
     frames = section.frames
@@ -474,7 +481,10 @@ def to_findings(
             # A harness race is placed at the extension's access, like one of
             # yours: the mutator's side is the harness's own code.
             if owner not in (YOURS, HARNESS):
-                frame = stacks[0][1][0] if stacks[0][1] else frame
+                # The plain access is the racy one; an atomic on the other
+                # side (`_Py_atomic_load_ptr`) is only where TSan noticed it.
+                firsts = [s[1][0] for s in stacks if s[1]]
+                frame = next((t for t in firsts if not _is_atomic(t)), firsts[0] if firsts else frame)
                 path = (frame.file and (_relative(frame.file, crate_root) or frame.file)) or (
                     frame.module or "<unknown>"
                 )
