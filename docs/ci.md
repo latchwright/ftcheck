@@ -57,9 +57,15 @@ $ docker run --rm --security-opt seccomp=unconfined \
 **Test dependencies** are installed automatically when the project declares them: a
 [PEP 735](https://peps.python.org/pep-0735/) dependency group named `test`, `tests` or
 `testing`; else an optional-dependencies extra of those names (installed on the
-instrumented wheel, never from source); else a `requirements` file such as
-`tests/requirements.txt`, `requirements-test.txt` or `requirements-dev.txt`; else a `dev`
-group. Add anything else with `--with PACKAGE`; turn this off with `--no-test-deps`.
+instrumented wheel, never from source); else a `requirements.txt` beside the tests being
+run (`tests/requirements.txt` by default, `other/requirements.txt` with `--tests other`);
+else a root `requirements` file such as `requirements-test.txt` or `requirements-dev.txt`;
+else a `dev` group. The summary names the source used. Add anything else with
+`--with PACKAGE`; turn this off with `--no-test-deps`.
+
+**Which tests run.** `--tests` when given; else pytest's own `testpaths` (from
+`pytest.ini`, `pyproject.toml`, `tox.ini` or `setup.cfg`, globs expanded); else `tests/`;
+else the project root. The summary says which, and why.
 
 **Tests that are not thread-safe** — using `mocker`, `capsys`, signal handlers, a fixed
 port, a shared temporary file — fail when every test body runs in N threads, and the run
@@ -97,7 +103,7 @@ start, or every run downloads your dependencies again.
 |---|---|---|
 | `PATH` | `.` | Project root, or the crate directory when it is not at the root |
 | `--threads N` | 8 | Threads per test body |
-| `--tests PATH` | `tests/` if present, else `.` | Test paths, relative to the project; repeatable |
+| `--tests PATH` | `testpaths`, else `tests/`, else `.` | Test paths, relative to the project; repeatable |
 | `--pytest-arg ARG` | — | One argument passed to pytest; repeatable |
 | `--with PACKAGE` / `--extra NAME` | — | Extra packages in the venv / install the wheel with an extra |
 | `--no-test-deps` | — | Do not install declared test dependencies |

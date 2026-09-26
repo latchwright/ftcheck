@@ -411,7 +411,7 @@ def prepare(
         return None
 
     if install_runner and opts.test_deps:
-        declared = _declared_test_dependencies(opts.project)
+        declared = _declared_test_dependencies(opts.project, _select_tests(opts)[0])
         if declared:
             label, extra_args = declared
             if extra_args and extra_args[0] == "{wheel}":
@@ -432,7 +432,71 @@ def prepare(
     return Prepared(python=python, wheel=wheel, tsan_dir=tsan_dir)
 
 
-def _declared_test_dependencies(project: pathlib.Path) -> tuple[str, list[str]] | None:
+def _pytest_testpaths(project: pathlib.Path) -> tuple[list[str], str] | None:
+    """`testpaths` from the project's pytest configuration, and the file it is in.
+
+    Files are tried in pytest's own order, and the first one that configures
+    pytest decides, even if it sets no `testpaths`.
+    """
+    import configparser
+    import tomllib
+
+    for name, section in (
+        ("pytest.ini", "pytest"), (".pytest.ini", "pytest"), ("pyproject.toml", None),
+        ("tox.ini", "pytest"), ("setup.cfg", "tool:pytest"),
+    ):  # fmt: skip
+        path = project / name
+        if not path.is_file():
+            continue
+        if section is None:
+            try:
+                tool = tomllib.loads(path.read_text()).get("tool", {})
+            except (OSError, tomllib.TOMLDecodeError):
+                continue
+            table = tool.get("pytest")
+            if not isinstance(table, dict):
+                continue
+            # pytest 9's native `[tool.pytest]`, or the older `ini_options`.
+            table = table.get("ini_options", table)
+            value = table.get("testpaths")
+        else:
+            parser = configparser.ConfigParser(interpolation=None)
+            try:
+                parser.read(path)
+            except (OSError, configparser.Error):
+                continue
+            if not parser.has_section(section):
+                continue
+            value = parser.get(section, "testpaths", fallback=None)
+        if isinstance(value, str):
+            value = value.split()
+        return list(value or []), name
+    return None
+
+
+def _select_tests(opts: Options) -> tuple[list[str], str]:
+    """The test paths to run, and why these: `--tests`, pytest's `testpaths`,
+    `tests/`, else the project root."""
+    if opts.tests:
+        return list(opts.tests), "--tests"
+    configured = _pytest_testpaths(opts.project)
+    if configured:
+        patterns, source = configured
+        # pytest expands globs in testpaths and ignores entries that match nothing.
+        paths = []
+        for pattern in patterns:
+            found = sorted(glob.glob(pattern, root_dir=opts.project))
+            paths += [p for p in found if p not in paths]
+        if paths:
+            return paths, f"testpaths in {source}"
+    if (opts.project / "tests").is_dir():
+        return ["tests"], "tests/ directory"
+    return ["."], "no tests/ directory"
+
+
+def _declared_test_dependencies(
+    project: pathlib.Path, tests: list[str] | None = None
+) -> tuple[str, list[str]] | None:
     # Returns (label, pip arguments); ["{wheel}", extra] means "the built wheel
     # with this extra", resolved by the caller, which knows the wheel.
     """Where the project declares its test dependencies, as pip arguments.
@@ -440,8 +504,9 @@ def _declared_test_dependencies(project: pathlib.Path) -> tuple[str, list[str]] 
     Neither project in a first-user trial got past test collection: the venv
     held only the wheel and the runner. In order: a PEP 735 dependency group
     (`test`, `tests`, `testing`), an optional-dependencies extra of those
-    names, a conventional requirements file; `dev` last, as it often carries
-    whole toolchains. `--no-test-deps` turns this off.
+    names, a `requirements.txt` beside the selected tests (`tests` defaults
+    to `tests/`), a conventional requirements file at the root; `dev` last,
+    as it often carries whole toolchains. `--no-test-deps` turns this off.
     """
     import tomllib
 
@@ -462,7 +527,15 @@ def _declared_test_dependencies(project: pathlib.Path) -> tuple[str, list[str]] 
             # Applied to the instrumented wheel, never `.[name]`: installing
             # from the source tree would build a second, uninstrumented copy.
             return f"extra '{name}'", ["{wheel}", name]
-    for rel in ("tests/requirements.txt", "requirements-test.txt", "requirements-tests.txt",
+    # Beside the tests being run, never a `tests/` that is not among them.
+    beside = []
+    for test in tests if tests is not None else ["tests"]:
+        folder = test if (project / test).is_dir() else os.path.dirname(test)
+        rel = os.path.normpath(os.path.join(folder, "requirements.txt"))
+        # The root's requirements.txt is the package's own, not its tests'.
+        if os.path.dirname(rel) and rel not in beside:
+            beside.append(rel)
+    for rel in (*beside, "requirements-test.txt", "requirements-tests.txt",
                 "test-requirements.txt", "requirements/test.txt", "requirements/tests.txt",
                 "requirements-dev.txt", "requirements/dev.txt"):  # fmt: skip
         if (project / rel).is_file():
@@ -531,7 +604,8 @@ def run(env: Environment, opts: Options) -> Outcome:
 
     out.stage = "test"
     junit = work / "pytest-junit.xml"
-    tests = opts.tests or (["tests"] if (opts.project / "tests").is_dir() else ["."])
+    tests, chosen = _select_tests(opts)
+    out.notes.append(f"running {' '.join(tests)} ({chosen})")
     cmd = [
         prepared.python, "-m", "pytest", *tests,
         f"--parallel-threads={opts.threads}",

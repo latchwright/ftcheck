@@ -15,6 +15,10 @@
   (the crate root, in the image) it became a finding's primary location and merge key.
 - **Races outside the extension are located at the plain access**, not at an atomic
   helper from CPython's `pyatomic*.h` on the other side.
+- **`ci` runs the tests the project configures.** With no `--tests`, the default is now
+  pytest's `testpaths` (then `tests/`, then the project root), and the summary says which
+  was chosen. Test requirements come from a `requirements.txt` beside the selected tests:
+  `--tests other` no longer installs `tests/requirements.txt`.
 
 ### Changed
 
