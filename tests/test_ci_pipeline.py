@@ -197,3 +197,92 @@ def test_each_run_keeps_its_own_tsan_logs(tmp_path):
     assert made[-1].name[:8].isdigit() and "Z" in made[-1].name, "named for the UTC time"
     same = [pipeline._new_tsan_dir(tmp_path / "ci", "") for _ in range(2)]
     assert same[0] != same[1] and all(p.is_dir() for p in same)
+
+
+def session(tmp_path, log: str, **kw) -> pipeline.Outcome:
+    path = tmp_path / "pytest.log"
+    path.write_text(log)
+    out = pipeline.Outcome(**kw)
+    pipeline._read_session(out, path)
+    return out
+
+
+def test_a_session_that_ends_early_without_an_internalerror_is_detected(tmp_path):
+    """A session that stops part-way without an INTERNALERROR read as a
+    suite that ran 2 tests and failed one."""
+    out = session(
+        tmp_path,
+        "Collected 40 items to run in parallel\n"
+        "==================== 1 passed, 1 failed in 3.21s ====================\n",
+        tests_collected=2,
+        pytest_exit=1,
+    )
+    assert out.aborted == "pytest stopped after 2 of 40 collected tests"
+
+    from ftcheck.ci import verdict
+    from ftcheck.exit_codes import UNAVAILABLE
+
+    out.stage = "done"
+    assert verdict(environment(), out).code == UNAVAILABLE, "exit 3, not a suite failure"
+
+
+def test_a_complete_session_is_not_called_early(tmp_path):
+    # Skipped and thread-unsafe tests are in the JUnit count, not in the
+    # "to run in parallel" count.
+    assert session(
+        tmp_path,
+        "Collected 6 items to run in parallel\n"
+        "============ 5 passed, 1 skipped, 1 failed in 0.10s ============\n",
+        tests_collected=6, tests_skipped=1, pytest_exit=1,
+    ).aborted is None  # fmt: skip
+    # pytest's own count comes before deselection.
+    assert session(
+        tmp_path,
+        "collected 7 items / 1 deselected / 6 selected\n"
+        "====== 4 passed, 1 skipped, 1 deselected, 1 failed in 0.12s ======\n",
+        tests_collected=5, tests_skipped=1, pytest_exit=1,
+    ).aborted is None  # fmt: skip
+    # -x / --maxfail stop on purpose: a failing suite, not an abort.
+    assert session(
+        tmp_path,
+        "Collected 6 items to run in parallel\n"
+        "!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!\n"
+        "==================== 1 passed, 1 failed in 0.07s ====================\n",
+        tests_collected=2, pytest_exit=1,
+    ).aborted is None  # fmt: skip
+
+
+def test_the_junit_count_keeps_skipped_tests(tmp_path):
+    junit = tmp_path / "j.xml"
+    junit.write_text(
+        '<testsuites><testsuite name="pytest" errors="0" failures="1" skipped="2" tests="7">'
+        "</testsuite></testsuites>"
+    )
+    assert pipeline._count_tests(junit) == (5, 1, 0, 2)
+
+
+def test_a_previous_runs_junit_is_never_read_as_this_ones(tmp_path, monkeypatch):
+    """A session killed before pytest wrote its XML must not inherit the counts
+    of the run before it."""
+    from ftcheck.ci import verdict
+    from ftcheck.ci.environment import Check
+    from ftcheck.exit_codes import UNAVAILABLE
+
+    o = opts(tmp_path)
+    o.work_dir.mkdir()
+    (o.work_dir / "pytest-junit.xml").write_text(
+        '<testsuite name="pytest" errors="0" failures="0" skipped="0" tests="3"/>'
+    )
+    prepared = pipeline.Prepared(python="python", wheel=tmp_path / "x.whl", tsan_dir=tmp_path)
+    monkeypatch.setattr(pipeline, "prepare", lambda *a, **k: prepared)
+
+    def died_quietly(cmd, log_path, **kwargs):
+        log_path.write_text("Collected 3 items to run in parallel\n")
+        return 0
+
+    monkeypatch.setattr(pipeline, "_stream", died_quietly)
+    env = environment()
+    env.checks.append(Check("x", True, "ok"))
+    out = pipeline.run(env, o)
+    assert out.tests_collected == 0
+    assert verdict(env, out).code == UNAVAILABLE

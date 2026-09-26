@@ -85,8 +85,10 @@ def test_uses_a_signal_handler(): ...
 or deselect them: `--pytest-arg=-k --pytest-arg="not network"`. Any pytest argument can
 be passed this way.
 
-**A session that aborts** part-way — a pytest `INTERNALERROR` — exits `3`, not `4`: the
-suite did not run, so nothing can be said about it. pytest's own summary line is printed.
+**A session that aborts** part-way exits `3`, not `4`: the suite did not run, so nothing
+can be said about it. That is a pytest `INTERNALERROR`, or a session that ran fewer tests
+than it collected without saying why (`-x` and `--maxfail` say why, and are a failing
+suite). pytest's own summary line is printed.
 
 **Stripped builds.** A stripped extension makes every frame of yours in a report
 nameless, so the build overrides both places a project can ask for it: the release

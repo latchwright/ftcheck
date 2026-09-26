@@ -26,6 +26,11 @@
 - **Raw TSan logs are kept per run.** Each run writes to `tsan-runs/<UTC time>[-seed<N>]/`
   under the work directory, named in the summary; the last five are kept (previously one
   generation, `tsan-previous/`, which back-to-back seeds overwrote).
+- **A pytest session that ends early is caught without an `INTERNALERROR`.** When the
+  session ran fewer tests than it collected, and not because of `-x` or `--maxfail`, `ci`
+  exits `3` ("pytest stopped after X of N collected tests"). A JUnit file left by an
+  earlier run is removed first, so a session that dies before writing one is never read
+  with the previous run's counts.
 
 ### Added
 

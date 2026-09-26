@@ -74,6 +74,7 @@ class Outcome:
     tests_collected: int = 0
     tests_failed: int = 0
     tests_errored: int = 0
+    tests_skipped: int = 0
     pytest_exit: int | None = None
 
 
@@ -199,6 +200,9 @@ def _uninstrumented_libraries(wheel: pathlib.Path, work: pathlib.Path) -> list[s
 
 
 _COLLECTED = re.compile(r"[Cc]ollected (\d+) items?")
+# The session's own count, printed before any test runs: the first line that
+# starts with it (a test's captured output can print another).
+_SESSION_COLLECTED = re.compile(r"^[Cc]ollected (\d+) items?", re.MULTILINE)
 _SUMMARY = re.compile(r"^=+ (.*(?:passed|failed|error|no tests ran).*) =+$", re.MULTILINE)
 
 
@@ -218,6 +222,17 @@ def _read_session(out: Outcome, log: pathlib.Path) -> None:
     if "INTERNALERROR" in text:
         of = f" of {max(collected)} collected" if collected else ""
         out.aborted = f"pytest aborted with an INTERNALERROR after {out.tests_collected} tests{of}"
+        return
+    # A session can also end part-way without saying why. -x and --maxfail
+    # stop on purpose, and pytest prints "stopping after" when they do.
+    first = _SESSION_COLLECTED.search(text)
+    if out.pytest_exit not in (0, 1) or not first or "stopping after" in text:
+        return
+    # -q prints no bordered summary, so the deselected count is read anywhere.
+    deselected = re.findall(r"(\d+) deselected", text)
+    seen = out.tests_collected + out.tests_skipped + (int(deselected[-1]) if deselected else 0)
+    if seen < int(first[1]):
+        out.aborted = f"pytest stopped after {seen} of {first[1]} collected tests"
 
 
 def _build_backend(project: pathlib.Path) -> str | None:
@@ -284,18 +299,21 @@ def _stripped(path: pathlib.Path) -> bool:
     return "Section Headers" in sections and ".symtab" not in sections
 
 
-def _count_tests(junit: pathlib.Path) -> tuple[int, int, int]:
-    """(collected, failed, errored) from pytest's JUnit XML."""
+def _count_tests(junit: pathlib.Path) -> tuple[int, int, int, int]:
+    """(collected, failed, errored, skipped) from pytest's JUnit XML.
+
+    `collected` leaves the skipped tests out: they exercised nothing.
+    """
     try:
         root = ElementTree.parse(junit).getroot()
     except (OSError, ElementTree.ParseError):
-        return 0, 0, 0
+        return 0, 0, 0, 0
     suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
     tests = sum(int(s.get("tests", 0)) for s in suites)
     skipped = sum(int(s.get("skipped", 0)) for s in suites)
     failed = sum(int(s.get("failures", 0)) for s in suites)
     errors = sum(int(s.get("errors", 0)) for s in suites)
-    return tests - skipped, failed, errors
+    return tests - skipped, failed, errors, skipped
 
 
 # Printed True only on a free-threaded build whose GIL came back on import.
@@ -726,6 +744,8 @@ def run(env: Environment, opts: Options) -> Outcome:
 
     out.stage = "test"
     junit = work / "pytest-junit.xml"
+    # A session that dies before writing it must not inherit the last run's counts.
+    junit.unlink(missing_ok=True)
     tests, chosen = _select_tests(opts)
     out.notes.append(f"running {' '.join(tests)} ({chosen})")
     cmd = [
@@ -744,7 +764,9 @@ def run(env: Environment, opts: Options) -> Outcome:
         cmd, test_log, cwd=opts.project, env=runtime_env(env, opts, prepared.tsan_dir)
     )
     out.log = _tail(test_log)
-    out.tests_collected, out.tests_failed, out.tests_errored = _count_tests(junit)
+    out.tests_collected, out.tests_failed, out.tests_errored, out.tests_skipped = _count_tests(
+        junit
+    )
     _read_session(out, test_log)
 
     collect(out, prepared.tsan_dir, opts.project, test_log.read_text(errors="replace"))
