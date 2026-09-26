@@ -48,7 +48,10 @@ $ docker run --rm --security-opt seccomp=unconfined \
    body in N threads simultaneously. A module-level instance your tests touch is therefore
    **shared across threads** — which is the situation the GIL used to make safe.
    `PYTHON_GIL=0` is forced, so an extension that does not declare `gil_used = false`
-   cannot quietly turn the GIL back on and hide every race.
+   cannot quietly turn the GIL back on and hide every race. Because users' interpreters do not
+   force it, each extension module is first imported once without `PYTHON_GIL`; if that
+   turns the GIL back on, a note says so (in `stress` too): the results then describe the
+   module only with the GIL forced off.
 5. **Collect.** TSan logs are parsed, each report is attributed, and repeats of the same
    race — from either side of the pair, from any threads — collapse into one finding.
 6. **Report.** Terminal summary, `--format json`, `--sarif`, `--junit`. The lint and the

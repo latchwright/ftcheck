@@ -146,3 +146,40 @@ def test_a_failed_build_requirement_install_names_its_stage(tmp_path, monkeypatc
     out = pipeline.Outcome()
     assert pipeline.prepare(environment(), opts(tmp_path), out) is None
     assert out.stage == "build" and "[build-system].requires" in out.error
+
+
+def test_a_module_that_re_enables_the_gil_is_noted(monkeypatch):
+    """Stock free-threaded CPython re-enables the GIL for a module that does not
+    declare `gil_used = false`; ftcheck forces it off, and must say so."""
+    monkeypatch.setattr(pipeline, "_reenables_gil", lambda python, m, env, cwd: m == "pkg._a")
+    (note,) = pipeline._gil_notes("python", ["pkg._a", "pkg._b"], {}, ".")
+    assert "`pkg._a`" in note and "gil_used = false" in note and "PYTHON_GIL=0" in note
+    monkeypatch.setattr(pipeline, "_reenables_gil", lambda *a: None)
+    assert pipeline._gil_notes("python", ["pkg._a"], {}, ".") == [], "inconclusive is silent"
+
+
+def test_the_gil_probe_runs_without_the_forced_setting(tmp_path):
+    import os
+    import sys
+
+    (tmp_path / "gil_probe_target.py").write_text(
+        "import os\nassert 'PYTHON_GIL' not in os.environ, 'the probe must not force it'\n"
+    )
+    env = {**os.environ, "PYTHONPATH": str(tmp_path), "PYTHON_GIL": "0"}
+    assert pipeline._reenables_gil(sys.executable, "gil_probe_target", env, tmp_path) is False
+    assert pipeline._reenables_gil(sys.executable, "no_such_module_xyz", env, tmp_path) is None
+
+
+def test_stress_prints_the_pipeline_notes():
+    import io
+    from types import SimpleNamespace
+
+    from ftcheck.report import text
+    from ftcheck.stress import StressOutcome
+
+    env = environment()
+    out = StressOutcome(notes=["`pkg._a` does not declare `gil_used = false`"])
+    sopts = SimpleNamespace(seed=1, iterations=10, budget_seconds=5)
+    stream = io.StringIO()
+    text.render_stress(env, out, 0, "headline", sopts, 8, stream)
+    assert "`pkg._a` does not declare" in stream.getvalue()

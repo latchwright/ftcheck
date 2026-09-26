@@ -298,6 +298,44 @@ def _count_tests(junit: pathlib.Path) -> tuple[int, int, int]:
     return tests - skipped, failed, errors
 
 
+# Printed True only on a free-threaded build whose GIL came back on import.
+_GIL_PROBE = (
+    "import importlib, sys, sysconfig\n"
+    "importlib.import_module(sys.argv[1])\n"
+    "print(bool(sysconfig.get_config_var('Py_GIL_DISABLED')) and sys._is_gil_enabled())\n"
+)
+
+
+def _reenables_gil(python: str, module: str, env: dict, cwd) -> bool | None:
+    """Whether importing `module` turns the GIL back on; None if the probe failed.
+
+    Run without PYTHON_GIL, which is how the module's users will import it.
+    """
+    probe_env = {k: v for k, v in env.items() if k != "PYTHON_GIL"}
+    try:
+        proc = subprocess.run(
+            [python, "-c", _GIL_PROBE, module],
+            capture_output=True, text=True, env=probe_env, cwd=cwd, timeout=300, check=False,
+        )  # fmt: skip
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    last = proc.stdout.strip().splitlines()[-1:]
+    if proc.returncode != 0 or not last:
+        return None
+    return {"True": True, "False": False}.get(last[0])
+
+
+def _gil_notes(python: str, modules: list[str], env: dict, cwd) -> list[str]:
+    return [
+        f"`{module}` does not declare `gil_used = false`, so a free-threaded interpreter "
+        "re-enables the GIL when it is imported. This run forced the GIL off "
+        "(PYTHON_GIL=0): its results describe the module only when it is imported that "
+        "way. Declare `#[pymodule(gil_used = false)]` once the module is thread-safe."
+        for module in modules
+        if _reenables_gil(python, module, env, cwd)
+    ]
+
+
 def _make_venv(env: Environment, venv: pathlib.Path, log: pathlib.Path, setup_env: dict) -> bool:
     """A venv on the TSan interpreter, unless one is already there."""
     if (venv / "bin" / "python").exists():
@@ -486,6 +524,10 @@ def prepare(
                 return None
             out.notes.append(f"installed the project's test dependencies from {label}")
 
+    # Every run forces PYTHON_GIL=0; say when that hides what users would get.
+    out.notes.extend(
+        _gil_notes(python, native_modules(wheel), {**setup_env, "PYTHONSAFEPATH": "1"}, work)
+    )
     return Prepared(python=python, wheel=wheel, tsan_dir=tsan_dir)
 
 

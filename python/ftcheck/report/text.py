@@ -189,7 +189,7 @@ def render_ci(env, outcome, code: int, headline: str, threads: int, stream: Text
                 file=stream,
             )
         for note in outcome.notes:
-            print(note, file=stream)
+            print(_wrap(note, ""), file=stream)
         if outcome.pytest_exit in _PYTEST_DID_NOT_RUN:
             # Collection errors show up as tests in pytest's XML; "ran 8 tests"
             # when none ran told a first user nothing.
@@ -259,6 +259,8 @@ def render_stress(
     if outcome is not None:
         if outcome.extension_modules:
             print(f"\nbuilt {', '.join(outcome.extension_modules)} with ThreadSanitizer", file=stream)
+        for note in outcome.notes:
+            print(_wrap(note, ""), file=stream)
         if outcome.error:
             print(f"\n{outcome.error}", file=stream)
             for line in (outcome.log or "").splitlines():

@@ -24,6 +24,13 @@
 - **Build scripts that import Python packages build.** `[build-system].requires`, less
   maturin, is installed into a build venv that is first on `PATH` for the build.
 
+### Added
+
+- **A note when a module re-enables the GIL.** `ci` and `stress` import each extension
+  module once without `PYTHON_GIL`; if the GIL comes back on (no `gil_used = false`), the
+  summary says the results hold only with `PYTHON_GIL=0`. `stress` now prints the
+  pipeline's notes.
+
 ### Changed
 
 - Race messages name the threads (`by thread T5 (ftm-refill)`), the text summary labels
