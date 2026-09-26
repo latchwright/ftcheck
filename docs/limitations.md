@@ -47,15 +47,19 @@ Known gaps, each still open:
   invisible to it.
 - **Exceptions raised only under concurrency**, other than Rust panics, are counted in
   the JSON output (`stress.exceptions`) but not surfaced in the text summary.
-- **A panic raised inside a dependency's code** is located at the dependency's source
-  line, not at the frame of yours that led there. The finding's symbol is the only pointer
-  to your callable.
-- **Panic locations are matched by message text.** When two sites panic with the same
-  message, a finding can be filed at the other site, and the second site may not appear
-  as a finding of its own.
+- **A panic raised inside a dependency's code** is labelled with the dependency and
+  located at its source line. The frame of yours that led there is found only when the
+  log holds a Rust backtrace: replay with `RUST_BACKTRACE=1` set. Backtraces are off by
+  default because printing one for every panic slows each panicking call about tenfold,
+  which changes the schedule under test.
+- **Panic sites are told apart by thread id**, which current Rust prints in its panic
+  line. With a toolchain that prints none, a panic is located by its message, and when
+  two sites share the message the finding lists both without saying which call panicked
+  where.
 - **A panic on input a mutator made invalid reads as a concurrency panic**, because the
-  single-threaded baseline never sees the mutator's transient state. A mutator must keep
-  the shared inputs valid at every instant.
+  single-threaded baseline never sees the mutator's transient state. The finding says
+  when mutators were running, but does not check whether one caused it. A mutator must
+  keep the shared inputs valid at every instant.
 - **Some dependency-internal TSan reports still fail runs.** Beyond the suppressed
   crossbeam-deque race, reports inside dependencies' fence-based synchronisation (which
   TSan does not model) and glibc's thread-local teardown can be filed as "in your
