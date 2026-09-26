@@ -93,3 +93,17 @@ def test_the_headline_names_each_kind_of_finding():
     assert describe_findings([tsan, tsan, panic]) == (
         "2 ThreadSanitizer reports and 1 panic under concurrency in your extension"
     )
+
+
+def test_a_panic_inside_a_dependency_is_not_called_yours():
+    from ftcheck.ci import describe_findings
+
+    tsan = {"rule": "tsan/data-race"}
+    dep = {"rule": "stress/panic", "dependency": "tinyqueue 1.2.3"}
+    assert describe_findings([dep, dep]) == (
+        "2 panics under concurrency inside a dependency, reached from your extension"
+    )
+    assert describe_findings([tsan, dep]) == (
+        "1 ThreadSanitizer report in your extension and 1 panic under concurrency "
+        "inside a dependency, reached from your extension"
+    )

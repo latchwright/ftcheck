@@ -224,20 +224,28 @@ _PANIC_AT = re.compile(
     r"(?:thread '[^'\n]*'(?: \((?P<tid>\d+)\))? )?"
     r"panicked at (?P<file>[^\n]+?):(?P<line>\d+):(?P<column>\d+):\n(?P<message>[^\n]*)"
 )
+_BACKTRACE_FRAME = re.compile(r"^\s+\d+: (?P<symbol>\S.*)$")
+_BACKTRACE_AT = re.compile(r"^\s+at (?P<file>.+?):(?P<line>\d+)(?::(?P<column>\d+))?$")
+_REGISTRY = re.compile(r"/registry/src/[^/]+/(?P<crate>[A-Za-z0-9_.-]+?)-(?P<ver>\d+\.\d+\.\d+[^/]*)/")
+_GIT_CHECKOUT = re.compile(r"/git/checkouts/(?P<crate>[^/]+?)-[0-9a-f]+/")
+_STD = re.compile(r"^/rustc/|/lib/rustlib/src/rust/library/")
 # How far past a thread's last matched panic line the next one is looked for.
 # Extra lines on a thread (a panic the extension caught itself) are skipped.
 _JOIN_WINDOW = 16
 
 
 def panic_locations(log_text: str) -> list[dict]:
-    """Every Rust panic line in the log, in order: where, and on which thread.
+    """Every Rust panic line in the log, in order: where, on which thread, and
+    the frames if a backtrace follows (only when RUST_BACKTRACE is set).
 
     `PanicException` carries the message but not the location; Rust prints
     both to stderr, which the driver log captures, with the native thread id
     the driver also records for each panicking call.
     """
     found = []
-    for m in _PANIC_AT.finditer(log_text):
+    matches = list(_PANIC_AT.finditer(log_text))
+    for i, m in enumerate(matches):
+        tail = log_text[m.end() : matches[i + 1].start() if i + 1 < len(matches) else len(log_text)]
         found.append(
             {
                 "tid": int(m.group("tid")) if m.group("tid") else None,
@@ -245,9 +253,50 @@ def panic_locations(log_text: str) -> list[dict]:
                 "line": int(m.group("line")),
                 "column": int(m.group("column")),
                 "message": m.group("message").strip(),
+                "frames": _backtrace(tail),
             }
         )
     return found
+
+
+def _backtrace(tail: str) -> list[dict]:
+    lines = tail.splitlines()
+    try:
+        start = next(i for i, ln in enumerate(lines[:4]) if ln.strip() == "stack backtrace:")
+    except StopIteration:
+        return []
+    frames = []
+    for line in lines[start + 1 :]:
+        frame, at = _BACKTRACE_FRAME.match(line), _BACKTRACE_AT.match(line)
+        if frame:
+            frames.append({"symbol": frame.group("symbol").strip(), "location": None})
+        elif at and frames:
+            file = at.group("file")
+            frames[-1]["location"] = {
+                "file": file.removeprefix("./"),
+                "line": int(at.group("line")),
+                "column": int(at.group("column") or 1),
+            }
+        else:
+            break
+    return frames
+
+
+def _dependency(path: str) -> str | None:
+    """"pyo3 0.29.2" when `path` is a dependency's source, else None (yours)."""
+    if m := _REGISTRY.search(path):
+        return f"{m.group('crate')} {m.group('ver')}"
+    if m := _GIT_CHECKOUT.search(path):
+        return m.group("crate")
+    if _STD.search(path):
+        return "the Rust standard library"
+    return None
+
+
+def _short(path: str) -> str:
+    """A dependency's file from its crate directory on: `pyo3-0.29.2/src/x.rs`."""
+    m = _REGISTRY.search(path) or _GIT_CHECKOUT.search(path)
+    return path[m.start("crate") :] if m else path
 
 
 def _same_message(logged: str, raised: str) -> bool:
@@ -359,6 +408,37 @@ def panic_findings(
     return [_panic_finding(entry, calls, threads, seed) for entry in groups.values()]
 
 
+def _inside(dependency: str, site: dict) -> str:
+    where = f"{_short(site['file'])}:{site['line']}"
+    if dependency.startswith("pyo3 ") and (
+        "/conversions/" in site["file"] or "extract_argument" in site["file"]
+    ):
+        return f" inside PyO3's argument conversion ({dependency}, a dependency) at {where}"
+    if dependency.startswith("the Rust"):
+        return f" inside {dependency} at {where}"
+    return f" inside the dependency {dependency} at {where}"
+
+
+def _your_frame(frames: list[dict]) -> tuple[dict | None, list[dict]]:
+    """The first backtrace frame in the crate's own Rust code, and the stack
+    from the first frame outside the standard library down to it."""
+    mine = [
+        i
+        for i, fr in enumerate(frames)
+        if fr["location"]
+        and fr["location"]["file"].endswith(".rs")
+        and _dependency(fr["location"]["file"]) is None
+    ]
+    if not mine:
+        return None, []
+    first = mine[0]
+    start = next(
+        (i for i, fr in enumerate(frames) if fr["location"] and not _STD.search(fr["location"]["file"])),
+        first,
+    )
+    return frames[first], [{"frames": frames[start : first + 1]}]
+
+
 def _panic_finding(entry: dict, calls: dict, threads: int, seed: int) -> dict:
     callables = entry["callables"]
     names = list(callables)
@@ -371,31 +451,46 @@ def _panic_finding(entry: dict, calls: dict, threads: int, seed: int) -> dict:
         more = f" and {len(names) - 5} more" if len(names) > 5 else ""
         named = f"{total} of {n_calls} calls to {', '.join(each)}{more}"
     sites = entry["sites"]
-    if len(sites) == 1:
+    dependency = _dependency(sites[0]["file"]) if len(sites) == 1 else None
+    yours, stacks, reached, hint = None, [], "", ""
+    if dependency:
+        at = _inside(dependency, sites[0])
+        yours, stacks = _your_frame(sites[0]["frames"])
+        if yours:
+            where = yours["location"]
+            reached = f" It was reached from `{yours['symbol']}` at {where['file']}:{where['line']}."
+        else:
+            hint = " (with RUST_BACKTRACE=1 set, to see which of your frames led there)"
+    elif len(sites) == 1:
         at = f" at {_site_key(sites[0])}"
     elif sites:
         at = f" at one of {', '.join(_site_key(e) for e in sites)} (the log does not say which)"
     else:
         at = ""
-    if sites:
+    if yours:
+        primary = dict(yours["location"])
+    elif sites:
         primary = {k: sites[0][k] for k in ("file", "line", "column")}
     else:
         primary = {"file": "<stress driver>", "line": 1, "column": 1}
-    return {
+    finding = {
         "rule": "stress/panic",
         "message": (
             f"Panicked{at} in {named} when driven from {threads} threads, and never in the "
-            f"single-threaded baseline: {entry['message'] or '(no message)'}. Replay with "
-            f"--replay {seed} --threads {threads}."
+            f"single-threaded baseline: {entry['message'] or '(no message)'}.{reached}"
+            f" Replay with --replay {seed} --threads {threads}{hint}."
         ),
         "confidence": "certain",
         "producer": "stress",
         "symbol": names[0],
         "primary": primary,
-        "stacks": [],
+        "stacks": stacks,
         "justification": None,
         "occurrences": len(names),
     }
+    if dependency:
+        finding["dependency"] = dependency
+    return finding
 
 
 def _crash_logged(tsan_dir: pathlib.Path) -> bool:

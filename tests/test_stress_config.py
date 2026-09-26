@@ -220,6 +220,78 @@ def test_without_thread_ids_every_site_with_the_message_is_listed():
     assert "3 of 100 calls" in finding["message"]
 
 
+_DEP = "/opt/cargo/registry/src/index.crates.io-0000000000000000"
+
+
+def test_a_panic_inside_a_dependency_says_so_and_names_the_callable():
+    from ftcheck.ci import describe_findings
+    from ftcheck.stress import panic_findings, panic_locations
+
+    log = (
+        f"thread '<unnamed>' (101) panicked at {_DEP}/tinyqueue-1.2.3/src/lib.rs:88:13:\n"
+        "queue closed\n"
+    )
+    result = _two_site_result({"101": [["m.Shelf.left", "queue closed", 2]]})
+    result["exceptions"] = {"m.Shelf.left": {"PanicException": 2}}
+    result["messages"] = {"m.Shelf.left": {"PanicException": "queue closed"}}
+    (finding,) = panic_findings(result, threads=8, seed=1, locations=panic_locations(log))
+    assert finding["dependency"] == "tinyqueue 1.2.3"
+    assert "inside the dependency tinyqueue 1.2.3" in finding["message"]
+    assert "`m.Shelf.left`" in finding["message"]
+    assert "RUST_BACKTRACE=1" in finding["message"], "the way to see your frame is named"
+    assert describe_findings([finding]) == (
+        "1 panic under concurrency inside a dependency, reached from your extension"
+    )
+
+
+def test_a_panic_in_pyo3_argument_conversion_is_named_as_such():
+    from ftcheck.stress import panic_findings, panic_locations
+
+    log = (
+        f"thread '<unnamed>' (101) panicked at {_DEP}/pyo3-0.29.2/src/conversions/std/num.rs:"
+        "31:9:\nconversion failed\n"
+    )
+    result = _two_site_result({"101": [["m.Shelf.left", "conversion failed", 2]]})
+    result["exceptions"] = {"m.Shelf.left": {"PanicException": 2}}
+    result["messages"] = {"m.Shelf.left": {"PanicException": "conversion failed"}}
+    (finding,) = panic_findings(result, threads=8, seed=1, locations=panic_locations(log))
+    assert finding["dependency"] == "pyo3 0.29.2"
+    assert "inside PyO3's argument conversion (pyo3 0.29.2, a dependency)" in finding["message"]
+
+
+def test_a_backtrace_in_the_log_locates_the_panic_at_your_frame():
+    """With RUST_BACKTRACE=1 set (a replay), the first frame in your crate is
+    the location, and the dependency's line is kept in the message."""
+    from ftcheck.stress import panic_findings, panic_locations
+
+    log = (
+        f"thread '<unnamed>' (101) panicked at {_DEP}/tinyqueue-1.2.3/src/lib.rs:88:13:\n"
+        "queue closed\n"
+        "stack backtrace:\n"
+        "   0: __rustc::rust_begin_unwind\n"
+        "             at /rustc/0000/library/std/src/panicking.rs:689:5\n"
+        "   1: core::panicking::panic_fmt\n"
+        "             at /rustc/0000/library/core/src/panicking.rs:80:14\n"
+        "   2: tinyqueue::Queue::pop\n"
+        f"             at {_DEP}/tinyqueue-1.2.3/src/lib.rs:88:13\n"
+        "   3: examplelib::Shelf::left\n"
+        "             at ./src/lib.rs:16:39\n"
+        "   4: examplelib::Shelf::__pymethod_left__\n"
+        "             at ./src/lib.rs:9:1\n"
+        "   5: _PyFunction_Vectorcall\n"
+        "note: Some details are omitted, run with `RUST_BACKTRACE=full` for a verbose backtrace.\n"
+    )
+    result = _two_site_result({"101": [["m.Shelf.left", "queue closed", 2]]})
+    result["exceptions"] = {"m.Shelf.left": {"PanicException": 2}}
+    result["messages"] = {"m.Shelf.left": {"PanicException": "queue closed"}}
+    (finding,) = panic_findings(result, threads=8, seed=1, locations=panic_locations(log))
+    assert finding["primary"] == {"file": "src/lib.rs", "line": 16, "column": 39}
+    assert "tinyqueue-1.2.3/src/lib.rs:88" in finding["message"]
+    assert "reached from `examplelib::Shelf::left`" in finding["message"]
+    symbols = [fr["symbol"] for fr in finding["stacks"][0]["frames"]]
+    assert symbols == ["tinyqueue::Queue::pop", "examplelib::Shelf::left"]
+
+
 def test_declared_test_dependencies_are_found_in_the_usual_places(tmp_path):
     """A first user's two projects both failed test collection: the venv held
     only the wheel and the runner."""

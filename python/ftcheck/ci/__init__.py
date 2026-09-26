@@ -24,16 +24,28 @@ def describe_findings(findings: list[dict]) -> str:
         ("stress/panic", "panic under concurrency", "panics under concurrency"),
         ("stress/hang", "hang under concurrency", "hangs under concurrency"),
     ]
+    # A panic inside a dependency's code is reached through the extension's
+    # surface, but calling it "in your extension" sent users to the wrong code.
+    dependency = sum(1 for f in findings if f["rule"] == "stress/panic" and f.get("dependency"))
+    yours = [f for f in findings if not (f["rule"] == "stress/panic" and f.get("dependency"))]
     parts = []
     for prefix, one, many in kinds:
-        n = sum(1 for f in findings if f["rule"].startswith(prefix))
+        n = sum(1 for f in yours if f["rule"].startswith(prefix))
         if n:
             parts.append(f"{n} {one if n == 1 else many}")
-    other = len(findings) - sum(int(p.split()[0]) for p in parts)
+    other = len(yours) - sum(int(p.split()[0]) for p in parts)
     if other:
         parts.append(f"{other} other finding{'s' if other != 1 else ''}")
-    joined = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
-    return f"{joined} in your extension"
+    described = []
+    if parts:
+        joined = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + " and " + parts[-1]
+        described.append(f"{joined} in your extension")
+    if dependency:
+        noun = "panic" if dependency == 1 else "panics"
+        described.append(
+            f"{dependency} {noun} under concurrency inside a dependency, reached from your extension"
+        )
+    return " and ".join(described)
 
 # pytest exit statuses that mean the suite itself never ran properly.
 _PYTEST_BROKEN = {2: "interrupted", 3: "internal error", 4: "usage error", 5: "no tests collected"}
