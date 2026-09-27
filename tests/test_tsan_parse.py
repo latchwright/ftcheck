@@ -507,3 +507,74 @@ def test_the_text_summary_labels_stacks_with_thread_names():
     _render_findings(outcome, out)
     assert "thread 1 (T1):" in out.getvalue() or "thread 2 (T1):" in out.getvalue()
     assert "(ftw-pair-3):" in out.getvalue()
+
+
+# Deduplication keeps the line. Inlined frames are named by their function
+# alone, so two `Drop` impls in one file both appear as `drop`: a signature of
+# rule, file and top symbols made two different races one finding.
+def _drop_race(line, other_line=None, fmt="{file}:{line}:9"):
+    other_line = line if other_line is None else other_line
+    at = fmt.format(file="/tmp/c/src/guards.rs", line=line)
+    other = fmt.format(file="/tmp/c/src/guards.rs", line=other_line)
+    return _race([f"drop {at} {EXT}"], [f"drop {other} {EXT}"])
+
+
+def test_two_races_with_the_same_symbols_in_one_file_are_two_findings():
+    mine, _, _ = to_findings([_drop_race(25), _drop_race(40)], EXAMPLE, CRATE)
+    assert sorted(f["primary"]["line"] for f in mine) == [25, 40]
+    assert [f["occurrences"] for f in mine] == [1, 1]
+
+
+def test_the_same_race_reported_again_is_still_one_finding():
+    """The same pair of lines, in either order, is the same race."""
+    reports = [_drop_race(25, 27), _drop_race(25, 27), _drop_race(27, 25)]
+    mine, _, _ = to_findings(reports, EXAMPLE, CRATE)
+    assert len(mine) == 1 and mine[0]["occurrences"] == 3
+
+
+def test_two_harness_races_at_nearby_lines_are_two_findings():
+    """A mutator racing two different reads of the same function."""
+    reports = [
+        _race([f"scan /tmp/c/src/lib.rs:{line}:14 {EXT}"],
+              ["__tsan_memcpy <null> (python3.14+0x9)",
+               f"bytearray_setslice_linear /cpython/Objects/bytearrayobject.c:500:5 {PY}"],
+              writer_name="ftm-churn")
+        for line in (117, 122)
+    ]  # fmt: skip
+    _, _, other = to_findings(reports, EXAMPLE, CRATE)
+    assert sorted(f["primary"]["line"] for f in other) == [117, 122]
+
+
+def test_findings_of_different_classifications_never_merge():
+    """A harness race and a race of yours at the same line stay apart, and
+    so do a harness race and a race outside the extension."""
+    harness = _race([f"scan /tmp/c/src/lib.rs:117:14 {EXT}"],
+                    ["__tsan_memcpy <null> (python3.14+0x9)",
+                     f"bytearray_setslice_linear /cpython/Objects/bytearrayobject.c:500:5 {PY}"],
+                    writer_name="ftm-churn")  # fmt: skip
+    yours = _race([f"scan /tmp/c/src/lib.rs:117:14 {EXT}"], [f"fill /tmp/c/src/lib.rs:117:14 {EXT}"])
+    other_so = "(otherlib.cpython-314t-x86_64-linux-gnu.so+0x5)"
+    external = _race([f"scan /tmp/c/src/lib.rs:117:14 {other_so}"],
+                     [f"fill /tmp/c/src/lib.rs:117:14 {other_so}"])  # fmt: skip
+    mine, _, other = to_findings([harness, yours, external], EXAMPLE, CRATE)
+    assert len(mine) == 1
+    assert len(other) == 2
+    assert sum(f["message"].startswith("A mutator rewrote") for f in other) == 1
+
+
+def test_without_a_line_the_same_symbols_in_one_file_are_still_one_finding():
+    """Frames with no line (missing, or 0 for compiler-generated code) cannot
+    tell two races apart: the file and symbols decide, as before."""
+    for fmt in ("{file}", "{file}:0:0"):
+        mine, _, _ = to_findings(
+            [_drop_race(25, fmt=fmt), _drop_race(40, fmt=fmt)], EXAMPLE, CRATE
+        )
+        assert len(mine) == 1 and mine[0]["occurrences"] == 2, fmt
+
+
+def test_without_a_line_different_symbols_in_one_file_are_not_merged():
+    """With no line to compare, every finding would sit at line 1 and merge."""
+    a = _race([f"drop /tmp/c/src/guards.rs {EXT}"], [f"drop /tmp/c/src/guards.rs {EXT}"])
+    b = _race([f"reset /tmp/c/src/guards.rs {EXT}"], [f"reset /tmp/c/src/guards.rs {EXT}"])
+    mine, _, _ = to_findings([a, b], EXAMPLE, CRATE)
+    assert sorted(f["symbol"] for f in mine) == ["drop", "reset"]
