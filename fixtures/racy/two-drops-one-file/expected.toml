@@ -1,0 +1,4 @@
+race = true
+rules = []
+symbols = ["drop"]
+justification = "Two `Drop` impls in one file each do an unsynchronised read-modify-write of a shared counter. Inlined, both accesses are symbolised as `drop` in `src/lib.rs`, so the file and the symbol cannot tell them apart: ThreadSanitizer must report two findings, one at each line (17 and 25). A deduplication key without the line merged them and hid one. The lint sees neither: the accesses are in `Drop` impls, not in a #[pyfunction]."

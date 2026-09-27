@@ -478,6 +478,31 @@ def _primary(report: Report, extension_modules: set[str], crate_root: str) -> tu
     return first, first.file or first.module or "<unknown>"
 
 
+def _anchor(section: Section, shown: list[Frame], placed_in_extension: bool,
+            extension_modules: set[str], crate_root: str) -> str:
+    """Where one access happened, as part of the deduplication key.
+
+    The frame chosen is the one `_primary` would choose from this stack alone
+    (or, for a race placed where it happened, the stack's top), so the
+    finding's primary location is one of its anchors. Inlined frames
+    are named by their function alone — two `Drop` impls in one file are both
+    `drop` — so the line is what tells two races apart. A frame without one
+    (missing, or 0 for compiler-generated code) falls back to its file, which
+    is the key as it was before lines were part of it.
+    """
+    frame = shown[0] if shown else None
+    if placed_in_extension:
+        in_crate = [f for f in section.frames if f.file and _relative(f.file, crate_root) is not None]
+        beyond_ffi = [f for f in in_crate if "/ffi/" not in f.file]  # type: ignore[operator]
+        in_module = [f for f in section.frames if f.module in extension_modules]
+        located = [f for f in in_module if f.file]
+        frame = next(iter(beyond_ffi or in_crate or located or in_module), frame)
+    if frame is None:
+        return ""
+    where = frame.file or frame.module or ""
+    return f"{where}:{frame.line}" if frame.line else where
+
+
 def to_findings(
     reports: list[Report], extension_modules: set[str], crate_root: str
 ) -> tuple[list[dict], list[dict], list[dict]]:
@@ -488,7 +513,9 @@ def to_findings(
 
     The same race reported from either side of the pair is one problem: stacks
     are ordered by their top frame before the signature is taken, so "write
-    races previous read" and "read races previous write" collapse.
+    races previous read" and "read races previous write" collapse. The
+    signature is the rule, the top symbols and each access's line (see
+    `_anchor`): the symbols alone cannot tell two inlined `drop`s apart.
 
     A report of yours is shown from your first frame; the others are shown from
     where the access actually happened, so a race inside CPython reads as one.
@@ -531,11 +558,16 @@ def to_findings(
             frame, path = Frame("<no stack captured>", None), "<no stack captured>"
         rule = _rule(report.kind)
         tops = " / ".join(dict.fromkeys(s[1][0].symbol for s in stacks if s[1]))
-        signature = f"{rule}|{path}|{tops}"
+        # Sorted, so the same race reported from either side is one key.
+        anchors = sorted(
+            _anchor(section, frames, owner in (YOURS, HARNESS), extension_modules, crate_root)
+            for section, frames in stacks
+        )
+        signature = f"{rule}|{tops}|{' / '.join(anchors)}" if stacks else f"{rule}|{path}"
 
         bucket = buckets[owner]
         if signature in bucket:
-            bucket[signature]["occurrences"] += 1
+            bucket[signature][1]["occurrences"] += 1
             continue
 
         # Addresses differ on every run; a message that changes when nothing
@@ -558,7 +590,11 @@ def to_findings(
             HARNESS: "A mutator rewrote a buffer's contents while your extension read it — "
             "a race in the harness by the buffer protocol's contract, not in your code. ",
         }[owner]
-        bucket[signature] = {
+        # Findings merge on their primary line (below); a primary without a
+        # line would sit at line 1 and merge with anything else in the file,
+        # so it merges only on its own signature.
+        merge_key = (rule, path, frame.line) if frame.line else (rule, signature)
+        bucket[signature] = merge_key, {
             "rule": rule,
             "message": f"{prefix}ThreadSanitizer: {report.kind}. {described}".rstrip(),
             "confidence": "certain" if owner == YOURS else "likely",
@@ -581,17 +617,18 @@ def to_findings(
         }
     # One root cause reported from many stacks is one finding: merge findings
     # sharing a rule and a primary line (one bug otherwise shows up as many).
+    # Never across classifications: a harness race and a race outside the
+    # extension at the same line stay two findings.
     return (
         _merge(buckets[YOURS].values()),
         _merge(buckets[REACHED].values()),
-        _merge(list(buckets[EXTERNAL].values()) + list(buckets[HARNESS].values())),
+        _merge(buckets[EXTERNAL].values()) + _merge(buckets[HARNESS].values()),
     )
 
 
-def _merge(findings) -> list[dict]:
+def _merge(keyed) -> list[dict]:
     merged: dict[tuple, dict] = {}
-    for f in findings:
-        key = (f["rule"], f["primary"]["file"], f["primary"]["line"])
+    for key, f in keyed:
         if key in merged:
             merged[key]["occurrences"] += f["occurrences"]
         else:

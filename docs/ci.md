@@ -54,6 +54,8 @@ $ docker run --rm --security-opt seccomp=unconfined \
    module only with the GIL forced off.
 5. **Collect.** TSan logs are parsed, each report is attributed, and repeats of the same
    race — from either side of the pair, from any threads — collapse into one finding.
+   A repeat is the same rule, the same top symbols and the same source line for each
+   access; two races in one file under the same inlined name (two `drop`s) stay two.
 6. **Report.** Terminal summary, `--format json`, `--sarif`, `--junit`. The lint and the
    sanitizer write one SARIF format; only the rule id (`FT00x` vs `tsan/...`) and the
    `producer` property tell them apart.
@@ -154,7 +156,9 @@ Each report is placed by looking at where each conflicting access actually happe
 Two refinements: when the *other* access is an allocation into
 reused memory (`new_dict`, `PyList_New`, `_PyFreeList_Pop`, …), your code touched an object
 after it was freed — **yours**, even though the frames look like CPython's. And reports
-from many stacks that share one rule and one primary line are merged into one finding.
+from many stacks that share one rule and one primary line are merged into one finding,
+within one classification (a harness race never absorbs another). A primary location
+with no line is not merged this way.
 
 **Crashes are findings.** A `SEGV` (or other fatal signal) with your code on the stack,
 or with no stack captured at all, fails the run: a process that died while being driven

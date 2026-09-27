@@ -22,17 +22,12 @@ static mut RETIRED: u64 = 0;
 /// Dropped by `oneshot` itself when the receiver goes away first.
 struct Receipt([u64; 32]);
 
+// Both `Drop` impls in this file are symbolised as `drop`: only their lines
+// tell the two races apart.
 impl Drop for Receipt {
     fn drop(&mut self) {
-        count_dropped(self.0[0]);
+        unsafe { DROPPED += self.0[0] };
     }
-}
-
-// The racy accesses are in functions of their own, so each race is reported
-// under its own name rather than as another `drop`.
-#[inline(never)]
-fn count_dropped(n: u64) {
-    unsafe { DROPPED += n };
 }
 
 #[pyfunction]
@@ -59,13 +54,8 @@ struct Retire;
 
 impl Drop for Retire {
     fn drop(&mut self) {
-        count_retired();
+        unsafe { RETIRED += 1 };
     }
-}
-
-#[inline(never)]
-fn count_retired() {
-    unsafe { RETIRED += 1 };
 }
 
 thread_local! {

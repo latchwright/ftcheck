@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- **Two races in one file under the same name are two findings.** TSan reports were
+  deduplicated by rule, file and top symbols, without the line, so two different races
+  whose inlined frames share a name (two `Drop` impls, both `drop`) became one finding
+  and one of them was counted as a repeat of the other. The key now carries each
+  access's line; the same race reported again, from either side, is still one finding.
+  Findings are also no longer merged across classifications (a harness race with a race
+  outside the extension), nor at line 1 when their primary location has no line.
 - **A mutator refilling another library's buffer is a harness race.** A mutator writing
   into a numpy array (`arr[:] = ...`) reaches the memory through numpy's copy loop, not
   CPython's, and was filed as the extension's `certain` race, failing the run. A copy
