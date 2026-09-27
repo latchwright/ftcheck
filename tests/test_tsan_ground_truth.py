@@ -13,6 +13,7 @@ green by quietly running nothing.
 All fixtures run in one container sharing one Cargo target directory, so the
 instrumented standard library is built once rather than once per fixture.
 """
+import itertools
 import json
 import os
 import pathlib
@@ -191,3 +192,15 @@ def test_two_panic_sites_with_one_message_are_reported_at_their_own_lines(result
     assert "Queue.tail" not in by_line[28]["message"]
     assert by_line[34]["symbol"].endswith("Queue.tail")
     assert "Queue.head" not in by_line[34]["message"]
+
+
+def test_two_races_under_one_inlined_name_are_reported_at_their_own_lines(results):
+    """Two `Drop` impls in one file are both symbolised `drop`; a key without
+    the line merged them into one finding and hid a real race."""
+    cases = {"two-drops-one-file": [17, 25]}
+    for (name, expected), mode in itertools.product(cases.items(), ("ci", "stress")):
+        report = results[(name, mode)]
+        races = [f for f in report["findings"] if f["rule"].startswith("tsan/")]
+        lines = sorted(f["primary"]["line"] for f in races)
+        assert lines == expected, (name, mode, [f["primary"] for f in races])
+        assert all(f["primary"]["file"].endswith(f"{name}/src/lib.rs") for f in races), (name, mode)
