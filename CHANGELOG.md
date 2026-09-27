@@ -31,6 +31,14 @@
   exits `3` ("pytest stopped after X of N collected tests"). A JUnit file left by an
   earlier run is removed first, so a session that dies before writing one is never read
   with the previous run's counts.
+- **Reports inside dependencies' fence-based synchronisation no longer fail runs.**
+  TSan does not model standalone fences, and cannot see inside glibc. The default
+  suppressions now cover `oneshot`'s message handover, crossbeam-epoch's reclamation
+  (0.9.18 and older) and glibc freeing a finished thread's TLS block
+  (`_dl_deallocate_tls`); each was filed as a race "in your extension". Each entry names
+  only the dependency's own function, so races in your code that the dependency runs (a
+  message's `Drop`, a deferred closure, a thread-local destructor) are still reported.
+  Pinned by `clean/clean-dependency-fences` and `racy/race-in-dependency-callbacks`.
 
 ### Added
 

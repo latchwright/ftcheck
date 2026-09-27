@@ -1,0 +1,4 @@
+[stress.args]
+"race_in_dependency_callbacks.undelivered" = ["50"]
+"race_in_dependency_callbacks.deferred" = ["50"]
+"race_in_dependency_callbacks.thread_exit" = ["2"]

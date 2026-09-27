@@ -163,12 +163,23 @@ killed after a short grace period and the crash is still reported.
 
 Suppressions, applied in this order:
 
-1. **ftcheck's own** (`ftcheck/ci/suppressions/rust.supp`) — known deliberate races in
-   common Rust dependencies, each justified by that dependency's own source and written
-   as `race_top:`, so a real race in your code that merely runs inside the dependency is
-   still reported. Today: crossbeam-deque's buffer, as used by rayon's job queue. The
-   `clean/clean-rayon` fixture proves both that it is needed (without it: exit 1) and that
-   it holds. `FTCHECK_NO_DEFAULT_SUPPRESSIONS=1` turns them off, to audit what they hide.
+1. **ftcheck's own** (`ftcheck/ci/suppressions/rust.supp`) — reports inside common
+   Rust dependencies that are not races, each justified by that dependency's own source:
+   - crossbeam-deque's buffer, as used by rayon's job queue — a documented deliberate race;
+   - `oneshot`'s message handover, ordered by a standalone `fence(Acquire)`;
+   - crossbeam-epoch's reclamation (0.9.18 and older), ordered by `SeqCst` fences;
+   - glibc freeing a finished thread's TLS block (`_dl_deallocate_tls`), ordered inside
+     glibc, which is not instrumented.
+
+   Entries are `race_top:` where TSan allows, matching only the frame where the access
+   happened. Where that frame is an interceptor (`free`, `memcpy`) they are `race:` on a
+   function of the dependency that runs none of your code. Either way, a real race in
+   your code that runs inside the dependency — a message's `Drop` run by `oneshot`, a
+   closure deferred to crossbeam-epoch, a thread-local destructor — is still reported.
+   `clean/clean-rayon` and `clean/clean-dependency-fences` prove the entries are needed
+   (without them: exit 1) and that they hold; `racy/race-in-dependency-callbacks` proves
+   they stop at the dependency's code. `FTCHECK_NO_DEFAULT_SUPPRESSIONS=1` turns them
+   off, to audit what they hide.
 2. **The image's CPython list** (`/work/tsan_suppressions/cpython.txt`), through
    `$FTCHECK_TSAN_SUPPRESSIONS`.
 3. **Yours**, with `--suppressions FILE`.

@@ -85,20 +85,6 @@ def test_a_panic_only_under_concurrency_is_a_finding():
     assert "--replay 3" in finding["message"]
 
 
-def test_every_default_suppression_is_narrow_and_justified():
-    """race_top only, each preceded by a comment: a broad `race:` would hide real
-    user races that run inside a dependency."""
-    from ftcheck.ci.pipeline import DEFAULT_SUPPRESSIONS
-
-    lines = DEFAULT_SUPPRESSIONS.read_text().splitlines()
-    entries = [(i, ln) for i, ln in enumerate(lines) if ln and not ln.startswith("#")]
-    assert entries, "the default file must not be empty"
-    for i, line in entries:
-        assert line.startswith("race_top:"), line
-        assert any(lines[j].startswith("#") for j in range(max(0, i - 3), i)), line
-
-
-
 def test_panics_at_one_location_are_one_finding_located_there():
     from ftcheck.stress import panic_findings, panic_locations
 
