@@ -1,4 +1,4 @@
 race = true
 rules = ["FT001"]
-symbols = ["count_dropped", "deferred", "count_retired"]
+symbols = ["drop", "deferred"]
 justification = "Unsynchronised read-modify-writes of shared counters in code the extension hands to a dependency: a message's Drop run by oneshot, a closure deferred to crossbeam-epoch's collector, and a thread-local destructor run at thread exit. The stacks pass through the same dependencies whose own reports ftcheck suppresses, so this pins that the suppressions stop at the dependency's code. FT001 sees only the closure, which is written inside the #[pyfunction]."

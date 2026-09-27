@@ -196,8 +196,9 @@ def test_two_panic_sites_with_one_message_are_reported_at_their_own_lines(result
 
 def test_two_races_under_one_inlined_name_are_reported_at_their_own_lines(results):
     """Two `Drop` impls in one file are both symbolised `drop`; a key without
-    the line merged them into one finding and hid a real race."""
-    cases = {"two-drops-one-file": [17, 25]}
+    the line merged them into one finding and hid a real race. Each fixture's
+    races are reported once, each at its own line."""
+    cases = {"two-drops-one-file": [17, 25], "race-in-dependency-callbacks": [29, 47, 57]}
     for (name, expected), mode in itertools.product(cases.items(), ("ci", "stress")):
         report = results[(name, mode)]
         races = [f for f in report["findings"] if f["rule"].startswith("tsan/")]
